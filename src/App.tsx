@@ -57,16 +57,8 @@ function App() {
       setVideo(result);
       setSelectedStreams(new Set([result.best_quality_index]));
     } catch (err) {
-      const msg = typeof err === "string" ? err : "Erro ao analisar URL";
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
       setError(msg);
-      if (msg.includes("Nenhum stream") || msg.includes("No HLS")) {
-        try {
-          await invoke("open_browser", { url });
-          setBrowserOpen(true);
-          setBrowserUrl(url);
-          setError(null);
-        } catch (_) {}
-      }
     } finally {
       setLoading(false);
     }
