@@ -67,13 +67,13 @@
 - [x] 3.7 Commit
 
 ### FASE 4 — Parser M3U8 (Rust)
-- [ ] 4.1 Parser de Master Playlist (#EXT-X-STREAM-INF, BANDWIDTH, RESOLUTION, CODECS)
-- [ ] 4.2 Parser de Media Playlist (#EXTINF, #EXT-X-KEY, #EXT-X-MAP, #EXT-X-BYTERANGE)
-- [ ] 4.3 Resolver URLs relativas contra base URL
-- [ ] 4.4 Suporte a live playlists (polling, EXT-X-MEDIA-SEQUENCE tracking)
-- [ ] 4.5 Struct StreamInfo { url, quality, codec, segments[], encryption, duration }
-- [ ] 4.6 Testes unitários para cada tipo de playlist
-- [ ] 4.7 Commit: "feat: M3U8 parser with master + media playlist support"
+- [x] 4.1 Parser de Master Playlist (#EXT-X-STREAM-INF, BANDWIDTH, RESOLUTION, CODECS)
+- [x] 4.2 Parser de Media Playlist (#EXTINF, #EXT-X-KEY, #EXT-X-MAP, #EXT-X-BYTERANGE)
+- [x] 4.3 Resolver URLs relativas contra base URL
+- [x] 4.4 Suporte a live (is_live via EXT-X-ENDLIST, MEDIA-SEQUENCE, TARGET-DURATION)
+- [x] 4.5 StreamInfo com url, quality, codec, segments, encryption, live, init_segment, duration
+- [x] 4.6 7 testes unitários: master, VOD, live, encrypted, fMP4 MAP, byterange, is_master
+- [x] 4.7 Commit
 
 ### FASE 5 — Download Engine (Rust)
 - [ ] 5.1 Download paralelo de segmentos (tokio tasks, configurável 1-6 threads)

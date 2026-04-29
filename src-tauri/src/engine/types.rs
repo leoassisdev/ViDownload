@@ -10,7 +10,11 @@ pub struct StreamInfo {
     pub codecs: Option<String>,
     pub segments: Vec<Segment>,
     pub is_encrypted: bool,
+    pub is_live: bool,
+    pub init_segment_url: Option<String>,
     pub total_duration: f64,
+    pub target_duration: f64,
+    pub media_sequence: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

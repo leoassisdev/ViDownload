@@ -6,7 +6,11 @@ export interface StreamInfo {
   codecs: string | null;
   segments: Segment[];
   is_encrypted: boolean;
+  is_live: boolean;
+  init_segment_url: string | null;
   total_duration: number;
+  target_duration: number;
+  media_sequence: number;
 }
 
 export interface Segment {

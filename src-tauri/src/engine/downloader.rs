@@ -75,15 +75,18 @@ async fn analyze_m3u8(
         // Master playlist → multiple quality options
         let mut streams = m3u8::parse_master_playlist(content, url);
 
-        // Fetch segment info for each stream to get duration
+        // Fetch info de segmentos para cada stream
         for stream in &mut streams {
             if let Ok(resp) = client.get(&stream.url).send().await {
                 if let Ok(body) = resp.text().await {
-                    let (segments, encrypted, duration) =
-                        m3u8::parse_media_playlist(&body, &stream.url);
-                    stream.segments = segments;
-                    stream.is_encrypted = encrypted;
-                    stream.total_duration = duration;
+                    let result = m3u8::parse_media_playlist(&body, &stream.url);
+                    stream.segments = result.segments;
+                    stream.is_encrypted = result.is_encrypted;
+                    stream.is_live = result.is_live;
+                    stream.init_segment_url = result.init_segment_url;
+                    stream.total_duration = result.total_duration;
+                    stream.target_duration = result.target_duration;
+                    stream.media_sequence = result.media_sequence;
                 }
             }
         }
@@ -98,8 +101,8 @@ async fn analyze_m3u8(
             best_quality_index: best_idx,
         })
     } else {
-        // Single media playlist
-        let (segments, encrypted, duration) = m3u8::parse_media_playlist(content, url);
+        // Media playlist única
+        let result = m3u8::parse_media_playlist(content, url);
 
         let stream = StreamInfo {
             url: url.to_string(),
@@ -107,9 +110,13 @@ async fn analyze_m3u8(
             bandwidth: 0,
             resolution: None,
             codecs: None,
-            segments,
-            is_encrypted: encrypted,
-            total_duration: duration,
+            segments: result.segments,
+            is_encrypted: result.is_encrypted,
+            is_live: result.is_live,
+            init_segment_url: result.init_segment_url,
+            total_duration: result.total_duration,
+            target_duration: result.target_duration,
+            media_sequence: result.media_sequence,
         };
 
         Ok(VideoFound {
@@ -146,17 +153,20 @@ async fn analyze_html_page(
                         let streams = m3u8::parse_master_playlist(&body, m3u8_url);
                         all_streams.extend(streams);
                     } else {
-                        let (segments, encrypted, duration) =
-                            m3u8::parse_media_playlist(&body, m3u8_url);
+                        let result = m3u8::parse_media_playlist(&body, m3u8_url);
                         all_streams.push(StreamInfo {
                             url: m3u8_url.clone(),
                             quality: "Original".to_string(),
                             bandwidth: 0,
                             resolution: None,
                             codecs: None,
-                            segments,
-                            is_encrypted: encrypted,
-                            total_duration: duration,
+                            segments: result.segments,
+                            is_encrypted: result.is_encrypted,
+                            is_live: result.is_live,
+                            init_segment_url: result.init_segment_url,
+                            total_duration: result.total_duration,
+                            target_duration: result.target_duration,
+                            media_sequence: result.media_sequence,
                         });
                     }
                 }

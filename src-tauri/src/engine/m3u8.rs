@@ -2,7 +2,18 @@ use url::Url;
 
 use super::types::{ByteRange, EncryptionKey, Segment, StreamInfo};
 
-/// Parse a master playlist and return available quality levels
+/// Resultado do parse de media playlist
+pub struct MediaPlaylistResult {
+    pub segments: Vec<Segment>,
+    pub is_encrypted: bool,
+    pub is_live: bool,
+    pub init_segment_url: Option<String>,
+    pub total_duration: f64,
+    pub target_duration: f64,
+    pub media_sequence: u64,
+}
+
+/// Parse de master playlist: retorna as qualidades disponíveis
 pub fn parse_master_playlist(content: &str, base_url: &str) -> Vec<StreamInfo> {
     let mut streams = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
@@ -24,9 +35,10 @@ pub fn parse_master_playlist(content: &str, base_url: &str) -> Vec<StreamInfo> {
                 .map(|r| format_quality(r, bandwidth))
                 .unwrap_or_else(|| format!("{}kbps", bandwidth / 1000));
 
-            // Next non-empty, non-comment line is the URL
+            // Próxima linha não-vazia e não-comentário é a URL
             i += 1;
-            while i < lines.len() && (lines[i].trim().is_empty() || lines[i].trim().starts_with('#'))
+            while i < lines.len()
+                && (lines[i].trim().is_empty() || lines[i].trim().starts_with('#'))
             {
                 i += 1;
             }
@@ -41,7 +53,11 @@ pub fn parse_master_playlist(content: &str, base_url: &str) -> Vec<StreamInfo> {
                     codecs,
                     segments: Vec::new(),
                     is_encrypted: false,
+                    is_live: false,
+                    init_segment_url: None,
                     total_duration: 0.0,
+                    target_duration: 0.0,
+                    media_sequence: 0,
                 });
             }
         }
@@ -49,28 +65,45 @@ pub fn parse_master_playlist(content: &str, base_url: &str) -> Vec<StreamInfo> {
         i += 1;
     }
 
-    // Sort by bandwidth descending (best quality first)
+    // Ordenar por bandwidth decrescente (melhor qualidade primeiro)
     streams.sort_by(|a, b| b.bandwidth.cmp(&a.bandwidth));
     streams
 }
 
-/// Parse a media playlist and return segments
-pub fn parse_media_playlist(content: &str, base_url: &str) -> (Vec<Segment>, bool, f64) {
+/// Parse de media playlist: retorna segmentos, info de encriptação, live, etc.
+pub fn parse_media_playlist(content: &str, base_url: &str) -> MediaPlaylistResult {
     let mut segments = Vec::new();
     let mut current_key: Option<EncryptionKey> = None;
     let mut sequence: u64 = 0;
+    let mut media_sequence: u64 = 0;
     let mut duration: f64 = 0.0;
     let mut total_duration: f64 = 0.0;
     let mut byte_range: Option<ByteRange> = None;
     let mut is_encrypted = false;
+    let mut has_endlist = false;
+    let mut init_segment_url: Option<String> = None;
+    let mut target_duration: f64 = 0.0;
 
     for line in content.lines() {
         let line = line.trim();
 
-        if line.starts_with("#EXT-X-MEDIA-SEQUENCE:") {
+        if line.starts_with("#EXT-X-TARGETDURATION:") {
+            if let Ok(td) = line["#EXT-X-TARGETDURATION:".len()..].parse::<f64>() {
+                target_duration = td;
+            }
+        } else if line.starts_with("#EXT-X-MEDIA-SEQUENCE:") {
             if let Ok(seq) = line["#EXT-X-MEDIA-SEQUENCE:".len()..].parse::<u64>() {
                 sequence = seq;
+                media_sequence = seq;
             }
+        } else if line.starts_with("#EXT-X-MAP:") {
+            // Init segment (para fMP4)
+            let attrs = &line["#EXT-X-MAP:".len()..];
+            if let Some(uri) = extract_attr(attrs, "URI") {
+                init_segment_url = Some(resolve_url(base_url, &uri));
+            }
+        } else if line == "#EXT-X-ENDLIST" {
+            has_endlist = true;
         } else if line.starts_with("#EXT-X-KEY:") {
             let attrs = &line["#EXT-X-KEY:".len()..];
             let method = extract_attr(attrs, "METHOD").unwrap_or_default();
@@ -88,8 +121,7 @@ pub fn parse_media_playlist(content: &str, base_url: &str) -> (Vec<Segment>, boo
                 });
             }
         } else if line.starts_with("#EXTINF:") {
-            let dur_str = line["#EXTINF:".len()..].trim_end_matches(',');
-            // Duration may have a title after comma
+            let dur_str = &line["#EXTINF:".len()..];
             let dur_str = dur_str.split(',').next().unwrap_or("0");
             duration = dur_str.parse::<f64>().unwrap_or(0.0);
         } else if line.starts_with("#EXT-X-BYTERANGE:") {
@@ -112,14 +144,26 @@ pub fn parse_media_playlist(content: &str, base_url: &str) -> (Vec<Segment>, boo
         }
     }
 
-    (segments, is_encrypted, total_duration)
+    // Live = sem #EXT-X-ENDLIST
+    let is_live = !has_endlist && !segments.is_empty();
+
+    MediaPlaylistResult {
+        segments,
+        is_encrypted,
+        is_live,
+        init_segment_url,
+        total_duration,
+        target_duration,
+        media_sequence,
+    }
 }
 
-/// Check if content looks like an m3u8 playlist
+/// Verifica se o conteúdo é uma master playlist
 pub fn is_master_playlist(content: &str) -> bool {
     content.contains("#EXT-X-STREAM-INF:")
 }
 
+/// Verifica se o conteúdo é um m3u8
 pub fn is_m3u8(content: &str) -> bool {
     content.trim_start().starts_with("#EXTM3U")
 }
@@ -131,11 +175,9 @@ fn extract_attr(attrs: &str, name: &str) -> Option<String> {
     let rest = &attrs[value_start..];
 
     if rest.starts_with('"') {
-        // Quoted value
         let end = rest[1..].find('"')?;
         Some(rest[1..=end].to_string())
     } else {
-        // Unquoted value (ends at comma or end)
         let end = rest.find(',').unwrap_or(rest.len());
         Some(rest[..end].to_string())
     }
@@ -156,7 +198,6 @@ fn resolve_url(base: &str, relative: &str) -> String {
 }
 
 fn format_quality(resolution: &str, bandwidth: u64) -> String {
-    // e.g. "1920x1080" → "1080p"
     if let Some(h) = resolution.split('x').nth(1) {
         format!("{}p", h)
     } else {
@@ -167,7 +208,10 @@ fn format_quality(resolution: &str, bandwidth: u64) -> String {
 fn parse_byte_range(s: &str) -> Option<ByteRange> {
     let parts: Vec<&str> = s.split('@').collect();
     let length = parts.first()?.parse::<u64>().ok()?;
-    let offset = parts.get(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let offset = parts
+        .get(1)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
     Some(ByteRange { length, offset })
 }
 
@@ -189,17 +233,15 @@ mod tests {
         let streams = parse_master_playlist(content, "https://example.com/video/master.m3u8");
 
         assert_eq!(streams.len(), 3);
-        // Sorted by bandwidth desc → 1080p first
         assert_eq!(streams[0].quality, "1080p");
         assert_eq!(streams[0].bandwidth, 2560000);
         assert!(streams[0].url.ends_with("1080p.m3u8"));
-
         assert_eq!(streams[1].quality, "720p");
         assert_eq!(streams[2].quality, "360p");
     }
 
     #[test]
-    fn test_parse_media_playlist() {
+    fn test_parse_media_playlist_vod() {
         let content = r#"#EXTM3U
 #EXT-X-TARGETDURATION:10
 #EXT-X-MEDIA-SEQUENCE:0
@@ -212,14 +254,39 @@ segment2.ts
 #EXT-X-ENDLIST
 "#;
 
-        let (segments, encrypted, duration) =
-            parse_media_playlist(content, "https://cdn.example.com/video/");
+        let result = parse_media_playlist(content, "https://cdn.example.com/video/");
 
-        assert_eq!(segments.len(), 3);
-        assert!(!encrypted);
-        assert!((duration - 21.021).abs() < 0.01);
-        assert_eq!(segments[0].sequence, 0);
-        assert!(segments[0].url.contains("segment0.ts"));
+        assert_eq!(result.segments.len(), 3);
+        assert!(!result.is_encrypted);
+        assert!(!result.is_live);
+        assert!((result.total_duration - 21.021).abs() < 0.01);
+        assert!((result.target_duration - 10.0).abs() < 0.01);
+        assert_eq!(result.media_sequence, 0);
+        assert_eq!(result.segments[0].sequence, 0);
+        assert!(result.segments[0].url.contains("segment0.ts"));
+    }
+
+    #[test]
+    fn test_parse_media_playlist_live() {
+        let content = r#"#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:2680
+#EXTINF:5.5,
+segment2680.ts
+#EXTINF:5.8,
+segment2681.ts
+#EXTINF:6.0,
+segment2682.ts
+"#;
+        // Sem #EXT-X-ENDLIST = live
+
+        let result = parse_media_playlist(content, "https://live.example.com/stream/");
+
+        assert_eq!(result.segments.len(), 3);
+        assert!(result.is_live);
+        assert_eq!(result.media_sequence, 2680);
+        assert_eq!(result.segments[0].sequence, 2680);
+        assert!((result.target_duration - 6.0).abs() < 0.01);
     }
 
     #[test]
@@ -230,16 +297,75 @@ segment2.ts
 enc_seg0.ts
 #EXTINF:10.0,
 enc_seg1.ts
+#EXT-X-ENDLIST
 "#;
 
-        let (segments, encrypted, _) =
-            parse_media_playlist(content, "https://cdn.example.com/video/");
+        let result = parse_media_playlist(content, "https://cdn.example.com/video/");
 
-        assert!(encrypted);
-        assert_eq!(segments.len(), 2);
-        let key = segments[0].key.as_ref().unwrap();
+        assert!(result.is_encrypted);
+        assert!(!result.is_live);
+        assert_eq!(result.segments.len(), 2);
+        let key = result.segments[0].key.as_ref().unwrap();
         assert_eq!(key.method, "AES-128");
         assert!(key.uri.contains("key.bin"));
         assert!(key.iv.is_some());
+    }
+
+    #[test]
+    fn test_parse_fmp4_playlist_with_map() {
+        let content = r#"#EXTM3U
+#EXT-X-TARGETDURATION:6
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:6.006,
+segment1.m4s
+#EXTINF:6.006,
+segment2.m4s
+#EXTINF:5.339,
+segment3.m4s
+#EXT-X-ENDLIST
+"#;
+
+        let result =
+            parse_media_playlist(content, "https://cdn.example.com/fmp4/playlist.m3u8");
+
+        assert_eq!(result.segments.len(), 3);
+        assert!(!result.is_live);
+        assert_eq!(
+            result.init_segment_url.as_deref(),
+            Some("https://cdn.example.com/fmp4/init.mp4")
+        );
+        assert!(result.segments[0].url.contains("segment1.m4s"));
+    }
+
+    #[test]
+    fn test_parse_byterange_playlist() {
+        let content = r#"#EXTM3U
+#EXT-X-TARGETDURATION:10
+#EXT-X-MAP:URI="main.mp4",BYTERANGE="616@0"
+#EXTINF:10.0,
+#EXT-X-BYTERANGE:100000@616
+main.mp4
+#EXTINF:10.0,
+#EXT-X-BYTERANGE:120000@100616
+main.mp4
+#EXT-X-ENDLIST
+"#;
+
+        let result = parse_media_playlist(content, "https://cdn.example.com/video/");
+
+        assert_eq!(result.segments.len(), 2);
+        let seg0 = &result.segments[0];
+        assert!(seg0.byte_range.is_some());
+        let br = seg0.byte_range.as_ref().unwrap();
+        assert_eq!(br.length, 100000);
+        assert_eq!(br.offset, 616);
+    }
+
+    #[test]
+    fn test_is_master_vs_media() {
+        assert!(is_master_playlist("#EXT-X-STREAM-INF:BANDWIDTH=1000"));
+        assert!(!is_master_playlist("#EXTINF:10.0,\nsegment.ts"));
+        assert!(is_m3u8("#EXTM3U\n#EXTINF:10.0"));
+        assert!(!is_m3u8("<html>"));
     }
 }
