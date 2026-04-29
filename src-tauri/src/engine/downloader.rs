@@ -91,8 +91,13 @@ pub async fn analyze(url: &str) -> Result<VideoFound, String> {
         .await
         .map_err(|e| format!("Erro ao ler resposta: {}", e))?;
 
-    // 3. É um m3u8 direto?
-    if m3u8::is_m3u8(&body) {
+    // 3. É um m3u8? (por conteúdo OU por content-type OU por extensão da URL)
+    let is_m3u8_content = m3u8::is_m3u8(&body);
+    let is_m3u8_type = content_type.contains("mpegurl") || content_type.contains("m3u");
+    let is_m3u8_ext = url.split('?').next().unwrap_or(url).ends_with(".m3u8")
+        || url.split('?').next().unwrap_or(url).ends_with(".m3u");
+
+    if is_m3u8_content || is_m3u8_type || is_m3u8_ext {
         return analyze_m3u8(&client, url, &body).await;
     }
 
