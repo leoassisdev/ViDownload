@@ -58,13 +58,13 @@
 - [x] 2.5 Commit
 
 ### FASE 3 — Detecção de Streams (Network Sniffing)
-- [ ] 3.1 Rust: proxy HTTP interceptador (usa `hyper` ou `reqwest` + `tokio`)
-- [ ] 3.2 Detectar URLs por Content-Type: `application/x-mpegurl`, `video/mp2t`, `application/dash+xml`
-- [ ] 3.3 Detectar URLs por extensão: `.m3u8`, `.m3u`, `.ts`, `.m4s`
-- [ ] 3.4 Capturar headers originais (Referer, Origin, Cookie, Auth) de cada request
-- [ ] 3.5 Emitir evento Tauri `stream-detected` → frontend
-- [ ] 3.6 Frontend: mostrar badge/notificação quando stream detectado
-- [ ] 3.7 Commit: "feat: network stream detection engine"
+- [x] 3.1 Rust: sniffer module com detecção por content-type, extensão e padrão de URL
+- [x] 3.2 Detectar URLs por Content-Type: mpegurl, mp2t, dash+xml, mp4, webm
+- [x] 3.3 Detectar URLs por extensão: m3u8, m3u, ts, m4s, mpd, mp4, fmp4
+- [x] 3.4 Capturar headers relevantes (Referer, Origin, Cookie, Auth, UA)
+- [x] 3.5 Emitir evento Tauri `stream-detected` → frontend
+- [x] 3.6 Frontend: StreamBadge com contagem de streams detectados
+- [x] 3.7 Commit
 
 ### FASE 4 — Parser M3U8 (Rust)
 - [ ] 4.1 Parser de Master Playlist (#EXT-X-STREAM-INF, BANDWIDTH, RESOLUTION, CODECS)
