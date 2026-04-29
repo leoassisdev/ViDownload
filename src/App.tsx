@@ -8,6 +8,7 @@ import TerminalLoader from "./components/TerminalLoader";
 import CubeLoader from "./components/CubeLoader";
 import PosterWall from "./components/PosterWall";
 import BrowserBar from "./components/BrowserBar";
+import DownloadProgressBar from "./components/DownloadProgress";
 import type { VideoFound, DownloadProgress } from "./types";
 
 function App() {
@@ -142,15 +143,6 @@ function App() {
 
   const showEmptyState = !loading && !video && !error && !browserOpen;
 
-  const formatBytes = (bytes: number) => {
-    if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
-    if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
-    if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`;
-    return `${bytes} B`;
-  };
-
-  const formatSpeed = (bps: number) => `${formatBytes(bps)}/s`;
-
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
       <header className="border-b border-zinc-800/60 bg-zinc-950/90 backdrop-blur-sm sticky top-0 z-20">
@@ -240,41 +232,12 @@ function App() {
               downloading={downloading}
             />
 
-            {/* Barra de progresso */}
+            {/* Barra de progresso SVG circular */}
             {downloading && progress && (
-              <div className="p-4 bg-zinc-900 border border-zinc-800 rounded-lg space-y-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-400">
-                    {progress.state === "Downloading" && "Baixando..."}
-                    {progress.state === "Muxing" && "Montando arquivo..."}
-                    {progress.state === "Done" && "Concluído!"}
-                  </span>
-                  <span className="text-zinc-500">
-                    {progress.segments_done}/{progress.segments_total} segs | {formatBytes(progress.bytes_downloaded)} | {formatSpeed(progress.speed_bps)}
-                  </span>
-                </div>
-
-                <div className="w-full bg-zinc-800 rounded-full h-2.5">
-                  <div
-                    className="bg-violet-600 h-2.5 rounded-full transition-all duration-300"
-                    style={{
-                      width: `${progress.segments_total > 0 ? (progress.segments_done / progress.segments_total) * 100 : 0}%`,
-                    }}
-                  />
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-xs text-zinc-600">
-                    {progress.segments_total > 0 ? Math.round((progress.segments_done / progress.segments_total) * 100) : 0}%
-                  </span>
-                  <button
-                    onClick={handleCancel}
-                    className="text-xs text-red-400 hover:text-red-300 transition-colors"
-                  >
-                    Cancelar
-                  </button>
-                </div>
-              </div>
+              <DownloadProgressBar
+                progress={progress}
+                onCancel={handleCancel}
+              />
             )}
           </div>
         )}

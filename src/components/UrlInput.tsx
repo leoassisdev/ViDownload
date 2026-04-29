@@ -22,13 +22,13 @@ export default function UrlInput({ onAnalyze, loading }: Props) {
         value={url}
         onChange={(e) => setUrl(e.target.value)}
         placeholder="Cole o link do vídeo aqui..."
-        className="flex-1 px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-colors"
+        className="flex-1 px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-lg text-white placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors"
         disabled={loading}
       />
       <button
         type="submit"
         disabled={loading || !url.trim()}
-        className="px-6 py-3 bg-violet-600 hover:bg-violet-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-semibold rounded-lg transition-colors cursor-pointer disabled:cursor-not-allowed"
+        className="px-6 py-3 bg-gradient-to-r from-blue-600 to-red-600 hover:from-blue-500 hover:to-red-500 disabled:from-zinc-700 disabled:to-zinc-700 disabled:text-zinc-500 text-white font-semibold rounded-lg transition-all cursor-pointer disabled:cursor-not-allowed"
       >
         {loading ? (
           <span className="flex items-center gap-2">

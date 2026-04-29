@@ -71,12 +71,12 @@ export default function StreamList({
               onClick={() => onToggleStream(idx)}
               className={`flex items-center gap-4 p-4 rounded-lg border cursor-pointer transition-all ${
                 isSelected
-                  ? "bg-violet-900/30 border-violet-500"
+                  ? "bg-blue-900/20 border-blue-500/60"
                   : "bg-zinc-800/50 border-zinc-700 hover:border-zinc-600"
               }`}
             >
               <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                isSelected ? "bg-violet-600 border-violet-600" : "border-zinc-600"
+                isSelected ? "bg-gradient-to-r from-blue-600 to-red-600 border-blue-600" : "border-zinc-600"
               }`}>
                 {isSelected && (
                   <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
