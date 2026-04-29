@@ -1,0 +1,28 @@
+# Dependencies
+node_modules
+
+# Build
+dist
+dist-ssr
+
+# Rust
+src-tauri/target
+
+# Environment
+*.local
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode
+.idea
+*.sw?
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
