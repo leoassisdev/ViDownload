@@ -25,28 +25,7 @@ function App() {
   useEffect(() => {
     const unlistenNav = listen<string>("browser-navigated", (e) => setBrowserUrl(e.payload));
     const unlistenClosed = listen("browser-closed", () => { setBrowserOpen(false); setBrowserUrl(""); });
-    const unlistenStreamDetected = listen<number>("stream-detected", async () => {
-      // Quando streams são detectados no browser, buscar e mostrar
-      try {
-        const detected = await invoke<Array<{url: string; source: string}>>("get_detected_streams");
-        // Filtrar apenas m3u8/HLS
-        const hlsUrls = detected.filter(d =>
-          d.url.match(/\.(m3u8|m3u)(\?|$)/i) || d.source === 'content-script'
-        );
-        if (hlsUrls.length > 0 && !video) {
-          // Tentar analisar o primeiro m3u8 encontrado
-          const firstUrl = hlsUrls[0].url;
-          setLoading(true);
-          try {
-            const result = await invoke<VideoFound>("analyze_url", { url: firstUrl });
-            setVideo(result);
-            setSelectedStreams(new Set([result.best_quality_index]));
-            setError(null);
-          } catch (_) {}
-          setLoading(false);
-        }
-      } catch (_) {}
-    });
+    const unlistenStreamDetected = listen<number>("stream-detected", () => {});
     const unlistenComplete = listen<{ video_id: string; path: string }>("download-complete", () => {
       setDownloading(false);
       setProgress(null);
@@ -163,6 +142,37 @@ function App() {
   };
 
   const handleCloseBrowser = () => { setBrowserOpen(false); setBrowserUrl(""); };
+
+  // Polling: quando browser está aberto, verifica streams detectados a cada 2s
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (browserOpen && !video && !loading) {
+      pollRef.current = setInterval(async () => {
+        try {
+          const urls = await invoke<string[]>("browser_poll_detected");
+          if (urls.length > 0) {
+            console.log("[ViDownload] Streams encontrados:", urls);
+            // Parar polling
+            if (pollRef.current) clearInterval(pollRef.current);
+            // Analisar o primeiro m3u8
+            setLoading(true);
+            try {
+              const result = await invoke<VideoFound>("analyze_url", { url: urls[0] });
+              setVideo(result);
+              setSelectedStreams(new Set([result.best_quality_index]));
+              setError(null);
+            } catch (err) {
+              setError(typeof err === "string" ? err : "Erro ao analisar stream detectado");
+            }
+            setLoading(false);
+          }
+        } catch (_) {}
+      }, 2000);
+    } else {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    }
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [browserOpen, video, loading]);
 
   const showEmptyState = !loading && !video && !error && !browserOpen;
 

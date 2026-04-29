@@ -2,165 +2,154 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
 /// Content script injetado em toda página carregada no browser.
-/// Monitora fetch/XHR/PerformanceObserver buscando URLs de stream (m3u8, ts, mpd).
-/// Os resultados ficam armazenados em window.__VI_DETECTED__ e são lidos via eval.
 const CONTENT_SCRIPT: &str = r#"
 (function() {
     if (window.__VI_INJECTED__) return;
     window.__VI_INJECTED__ = true;
-    window.__VI_DETECTED__ = window.__VI_DETECTED__ || [];
-
-    function report(url, source) {
-        if (!url || typeof url !== 'string') return;
-        if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('mediasource:')) return;
-        const dominated = window.__VI_DETECTED__.some(d => d.url === url);
-        if (dominated) return;
-        window.__VI_DETECTED__.push({ url, source, ts: Date.now() });
-        console.log('[ViDownload] stream detectado:', source, url);
-
-        // Enviar para o servidor de callback local (funciona sem IPC)
-        try {
-            new Image().src = 'http://127.0.0.1:17377/detected?url=' + encodeURIComponent(url) + '&source=' + encodeURIComponent(source);
-        } catch(e) {}
-
-        // Tentar IPC também (caso esteja disponível)
-        try {
-            if (window.__TAURI_INTERNALS__) {
-                window.__TAURI_INTERNALS__.invoke('report_detected_stream', { url: url, source: source });
-            }
-        } catch(e) {}
-    }
+    window.__VI_DETECTED__ = [];
+    window.__VI_ORIGINAL_TITLE__ = document.title;
 
     function isStreamUrl(url) {
         if (typeof url !== 'string') return false;
-        return /\.(m3u8|m3u|mpd|ts|m4s)(\?|$)/i.test(url) ||
-               /mpegurl|dash\+xml/i.test(url);
+        return /\.(m3u8|m3u|mpd)(\?|$)/i.test(url) ||
+               /mpegurl|dash\+xml/i.test(url) ||
+               /manifest.*format.*m3u8/i.test(url);
+    }
+
+    function report(url, source) {
+        if (!url || typeof url !== 'string') return;
+        if (url.startsWith('data:') || url.startsWith('blob:')) return;
+        if (window.__VI_DETECTED__.some(function(d) { return d.url === url; })) return;
+        window.__VI_DETECTED__.push({ url: url, source: source });
+        console.log('[ViDownload] detectado:', source, url);
     }
 
     // Interceptar fetch
-    const origFetch = window.fetch;
-    window.fetch = function(...args) {
-        const input = args[0];
-        const url = typeof input === 'string' ? input : input?.url || '';
+    var origFetch = window.fetch;
+    window.fetch = function() {
+        var url = typeof arguments[0] === 'string' ? arguments[0] : (arguments[0] && arguments[0].url || '');
         if (isStreamUrl(url)) report(url, 'fetch');
-        return origFetch.apply(this, args);
+        return origFetch.apply(this, arguments);
     };
 
     // Interceptar XMLHttpRequest
-    const origOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+    var origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url) {
         if (isStreamUrl(url)) report(url, 'xhr');
-        return origOpen.apply(this, [method, url, ...rest]);
+        return origOpen.apply(this, arguments);
     };
 
-    // PerformanceObserver para recursos carregados
+    // Interceptar video.src
     try {
-        const obs = new PerformanceObserver(function(list) {
-            for (const entry of list.getEntries()) {
-                if (isStreamUrl(entry.name)) report(entry.name, 'resource');
-            }
-        });
-        obs.observe({ entryTypes: ['resource'] });
+        var desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+        if (desc && desc.set) {
+            var origSet = desc.set;
+            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+                set: function(val) { if (isStreamUrl(val)) report(val, 'video-src'); return origSet.call(this, val); },
+                get: desc.get, configurable: true
+            });
+        }
     } catch(e) {}
 
-    // Monitorar <video> e <source> elements
-    const moObs = new MutationObserver(function(mutations) {
-        for (const m of mutations) {
-            for (const node of m.addedNodes) {
-                if (node.tagName === 'VIDEO' || node.tagName === 'SOURCE') {
-                    const src = node.src || node.getAttribute('src') || '';
-                    if (isStreamUrl(src)) report(src, 'dom');
+    // PerformanceObserver
+    try {
+        new PerformanceObserver(function(list) {
+            list.getEntries().forEach(function(e) { if (isStreamUrl(e.name)) report(e.name, 'resource'); });
+        }).observe({ entryTypes: ['resource'] });
+    } catch(e) {}
+
+    // MutationObserver
+    new MutationObserver(function(muts) {
+        muts.forEach(function(m) {
+            m.addedNodes.forEach(function(n) {
+                if (n.tagName === 'VIDEO' || n.tagName === 'SOURCE') {
+                    var s = n.src || n.getAttribute('src') || '';
+                    if (isStreamUrl(s)) report(s, 'dom');
                 }
-                if (node.querySelectorAll) {
-                    node.querySelectorAll('video[src], source[src]').forEach(function(el) {
-                        const src = el.src || el.getAttribute('src') || '';
-                        if (isStreamUrl(src)) report(src, 'dom');
+                if (n.querySelectorAll) {
+                    n.querySelectorAll('video[src],source[src]').forEach(function(el) {
+                        var s = el.src || el.getAttribute('src') || '';
+                        if (isStreamUrl(s)) report(s, 'dom');
                     });
                 }
-            }
-        }
-    });
-    moObs.observe(document.documentElement, { childList: true, subtree: true });
-
-    // Interceptar MediaSource.addSourceBuffer + SourceBuffer.appendBuffer
-    // (Capture mode — pega dados que o player injeta no browser)
-    try {
-        if (window.MediaSource && !window.MediaSource.__vi_patched__) {
-            const origAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
-            MediaSource.prototype.addSourceBuffer = function(mimeType) {
-                const sb = origAddSourceBuffer.apply(this, arguments);
-                const origAppendBuffer = sb.appendBuffer.bind(sb);
-                sb.appendBuffer = function(data) {
-                    if (data && (data.byteLength || data.length)) {
-                        report('mediasource://' + mimeType + '/' + Date.now(), 'mediasource');
-                    }
-                    return origAppendBuffer(data);
-                };
-                return sb;
-            };
-            window.MediaSource.__vi_patched__ = true;
-        }
-    } catch(e) {}
-
-    // Interceptar HTMLMediaElement.src (captura HLS nativo no WKWebView)
-    try {
-        const origSrcDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-        if (origSrcDesc && origSrcDesc.set) {
-            const origSet = origSrcDesc.set;
-            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-                set: function(val) {
-                    if (isStreamUrl(val)) report(val, 'video-src');
-                    return origSet.call(this, val);
-                },
-                get: origSrcDesc.get,
-                configurable: true
             });
-        }
-    } catch(e) {}
-
-    // Interceptar HTMLSourceElement.src
-    try {
-        const origSrcDesc = Object.getOwnPropertyDescriptor(HTMLSourceElement.prototype, 'src');
-        if (origSrcDesc && origSrcDesc.set) {
-            const origSet = origSrcDesc.set;
-            Object.defineProperty(HTMLSourceElement.prototype, 'src', {
-                set: function(val) {
-                    if (isStreamUrl(val)) report(val, 'source-src');
-                    return origSet.call(this, val);
-                },
-                get: origSrcDesc.get,
-                configurable: true
-            });
-        }
-    } catch(e) {}
-
-    // Polling: varrer <video> existentes a cada 2s
-    setInterval(function() {
-        document.querySelectorAll('video, source').forEach(function(el) {
-            var s = el.src || el.currentSrc || el.getAttribute('src') || '';
-            if (isStreamUrl(s)) report(s, 'poll');
         });
-        // Também verificar player videojs
+    }).observe(document.documentElement, { childList: true, subtree: true });
+
+    // Polling video elements e videojs
+    setInterval(function() {
+        document.querySelectorAll('video').forEach(function(v) {
+            ['src','currentSrc'].forEach(function(prop) {
+                var s = v[prop]; if (s && isStreamUrl(s)) report(s, 'poll');
+            });
+        });
         try {
-            if (window.videojs) {
-                var players = videojs.getAllPlayers ? videojs.getAllPlayers() : [];
-                players.forEach(function(p) {
-                    var tech = p.tech_;
-                    if (tech && tech.sourceHandler_ && tech.sourceHandler_.src) {
-                        report(tech.sourceHandler_.src, 'videojs');
-                    }
-                    var src = p.currentSrc ? p.currentSrc() : '';
-                    if (isStreamUrl(src)) report(src, 'videojs-src');
+            if (window.videojs && videojs.getAllPlayers) {
+                videojs.getAllPlayers().forEach(function(p) {
+                    try {
+                        var s = p.currentSrc(); if (s && isStreamUrl(s)) report(s, 'videojs');
+                        var t = p.tech_; if (t) {
+                            var vhs = t.vhs || t.hls;
+                            if (vhs && vhs.playlists && vhs.playlists.master) {
+                                var master = vhs.playlists.master;
+                                if (master.uri) report(master.uri, 'vhs-master');
+                                (master.playlists || []).forEach(function(pl) {
+                                    if (pl.uri) report(pl.uri, 'vhs-variant');
+                                });
+                            }
+                        }
+                    } catch(e) {}
                 });
             }
         } catch(e) {}
-    }, 2000);
+    }, 1500);
 
     console.log('[ViDownload] content script injetado');
 })();
 "#;
 
-/// Estado compartilhado: se o browser está aberto
+/// JS que extrai URLs detectadas e coloca no document.title
+const EXTRACT_JS: &str = r#"
+(function() {
+    var urls = [];
+    // De __VI_DETECTED__
+    if (window.__VI_DETECTED__) {
+        window.__VI_DETECTED__.forEach(function(d) { urls.push(d.url); });
+    }
+    // De video elements
+    document.querySelectorAll('video').forEach(function(v) {
+        ['src','currentSrc'].forEach(function(p) {
+            var s = v[p];
+            if (s && /\.(m3u8|m3u|mpd)(\?|$)/i.test(s)) urls.push(s);
+        });
+    });
+    // De videojs
+    try {
+        if (window.videojs && videojs.getAllPlayers) {
+            videojs.getAllPlayers().forEach(function(p) {
+                try {
+                    var s = p.currentSrc(); if (s && /m3u8|mpd/i.test(s)) urls.push(s);
+                    var t = p.tech_; if (t && (t.vhs||t.hls)) {
+                        var vhs = t.vhs||t.hls;
+                        if (vhs.playlists && vhs.playlists.master && vhs.playlists.master.uri)
+                            urls.push(vhs.playlists.master.uri);
+                    }
+                } catch(e) {}
+            });
+        }
+    } catch(e) {}
+    // Unique
+    urls = urls.filter(function(v,i,a) { return a.indexOf(v) === i; });
+    if (urls.length > 0) {
+        document.title = 'VI_STREAMS:' + JSON.stringify(urls);
+    }
+})();
+"#;
+
+const RESTORE_TITLE_JS: &str = r#"
+if (window.__VI_ORIGINAL_TITLE__) document.title = window.__VI_ORIGINAL_TITLE__;
+"#;
+
 pub struct BrowserState {
     pub is_open: Mutex<bool>,
 }
@@ -179,7 +168,6 @@ pub async fn open_browser(
     state: State<'_, BrowserState>,
     url: String,
 ) -> Result<(), String> {
-    // Fechar browser existente se houver
     if let Some(win) = app.get_webview_window("browser") {
         let _ = win.close();
         std::thread::sleep(std::time::Duration::from_millis(200));
@@ -195,14 +183,13 @@ pub async fn open_browser(
         .initialization_script(CONTENT_SCRIPT)
         .on_navigation(move |nav_url| {
             let _ = handle.emit("browser-navigated", nav_url.to_string());
-            true // permitir toda navegação
+            true
         })
         .build()
         .map_err(|e| e.to_string())?;
 
     *state.is_open.lock().unwrap() = true;
     app.emit("browser-opened", ()).map_err(|e| e.to_string())?;
-
     Ok(())
 }
 
@@ -221,67 +208,60 @@ pub async fn close_browser(
 
 #[tauri::command]
 pub async fn browser_navigate(app: AppHandle, url: String) -> Result<(), String> {
-    let win = app
-        .get_webview_window("browser")
-        .ok_or("Navegador não está aberto")?;
+    let win = app.get_webview_window("browser").ok_or("Navegador não está aberto")?;
     let parsed: url::Url = url.parse().map_err(|e: url::ParseError| e.to_string())?;
     win.navigate(parsed).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn browser_back(app: AppHandle) -> Result<(), String> {
-    let win = app
-        .get_webview_window("browser")
-        .ok_or("Navegador não está aberto")?;
+    let win = app.get_webview_window("browser").ok_or("Navegador não está aberto")?;
     win.eval("history.back()").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn browser_forward(app: AppHandle) -> Result<(), String> {
-    let win = app
-        .get_webview_window("browser")
-        .ok_or("Navegador não está aberto")?;
+    let win = app.get_webview_window("browser").ok_or("Navegador não está aberto")?;
     win.eval("history.forward()").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn browser_reload(app: AppHandle) -> Result<(), String> {
-    let win = app
-        .get_webview_window("browser")
-        .ok_or("Navegador não está aberto")?;
+    let win = app.get_webview_window("browser").ok_or("Navegador não está aberto")?;
     win.eval("location.reload()").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn browser_get_url(app: AppHandle) -> Result<String, String> {
-    let win = app
-        .get_webview_window("browser")
-        .ok_or("Navegador não está aberto")?;
+    let win = app.get_webview_window("browser").ok_or("Navegador não está aberto")?;
     let url = win.url().map_err(|e| e.to_string())?;
     Ok(url.to_string())
 }
 
-/// Lê os streams detectados pelo content script e limpa a lista
+/// Polling: injeta JS que extrai streams e coloca no title, depois lê o title
 #[tauri::command]
-pub async fn browser_poll_detected(app: AppHandle) -> Result<(), String> {
-    let win = app
-        .get_webview_window("browser")
-        .ok_or("Navegador não está aberto")?;
+pub async fn browser_poll_detected(app: AppHandle) -> Result<Vec<String>, String> {
+    let win = app.get_webview_window("browser").ok_or("Navegador não está aberto")?;
 
-    // O eval injeta um script que lê __VI_DETECTED__, envia via document.title hack,
-    // e limpa a lista. O evento browser-navigated será emitido com os dados.
-    // Porém, eval() não retorna valor em Tauri 2.
-    // Então usamos uma abordagem diferente: o content script já logou tudo.
-    // Para Phase 2, o polling visual será feito na Phase 3 com network sniffing.
-    // Por ora, o content script apenas detecta e loga no console do browser.
-    let _ = win.eval(
-        r#"
-        if (window.__VI_DETECTED__ && window.__VI_DETECTED__.length > 0) {
-            document.title = 'VI_STREAMS:' + JSON.stringify(window.__VI_DETECTED__) + ':VI_END|' + document.title;
-            window.__VI_DETECTED__ = [];
+    // Injetar JS que coloca URLs no document.title
+    win.eval(EXTRACT_JS).map_err(|e| e.to_string())?;
+
+    // Esperar o JS executar
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Ler o título
+    let title = win.title().map_err(|e| e.to_string())?;
+
+    // Restaurar título original
+    let _ = win.eval(RESTORE_TITLE_JS);
+
+    // Parsear URLs do título
+    if title.starts_with("VI_STREAMS:") {
+        let json_str = &title["VI_STREAMS:".len()..];
+        if let Ok(urls) = serde_json::from_str::<Vec<String>>(json_str) {
+            return Ok(urls);
         }
-    "#,
-    );
+    }
 
-    Ok(())
+    Ok(vec![])
 }
