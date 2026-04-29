@@ -177,8 +177,11 @@ function App() {
             {!browserOpen && (
               <button
                 onClick={() => {
-                  const url = (document.querySelector<HTMLInputElement>("#url-input"))?.value?.trim();
-                  if (url) handleOpenBrowser(url.startsWith("http") ? url : `https://${url}`);
+                  const inputUrl = (document.querySelector<HTMLInputElement>("#url-input"))?.value?.trim();
+                  const url = inputUrl && inputUrl.length > 3
+                    ? (inputUrl.startsWith("http") ? inputUrl : `https://${inputUrl}`)
+                    : "https://www.google.com";
+                  handleOpenBrowser(url);
                 }}
                 className="ml-auto px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white border border-zinc-700 rounded-lg transition-colors"
               >
