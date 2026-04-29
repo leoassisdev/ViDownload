@@ -31,7 +31,7 @@ pub fn run() {
             // Iniciar servidor de callback local para receber URLs do content script
             let handle = app.handle().clone();
             let sniffer = sniffer_state.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 callback_server::start(handle, sniffer).await;
             });
             Ok(())
