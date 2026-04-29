@@ -70,6 +70,26 @@ const CONTENT_SCRIPT: &str = r#"
     });
     moObs.observe(document.documentElement, { childList: true, subtree: true });
 
+    // Interceptar MediaSource.addSourceBuffer + SourceBuffer.appendBuffer
+    // (Capture mode — pega dados que o player injeta no browser)
+    try {
+        if (window.MediaSource && !window.MediaSource.__vi_patched__) {
+            const origAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
+            MediaSource.prototype.addSourceBuffer = function(mimeType) {
+                const sb = origAddSourceBuffer.apply(this, arguments);
+                const origAppendBuffer = sb.appendBuffer.bind(sb);
+                sb.appendBuffer = function(data) {
+                    if (data && (data.byteLength || data.length)) {
+                        report('mediasource://' + mimeType + '/' + Date.now(), 'mediasource');
+                    }
+                    return origAppendBuffer(data);
+                };
+                return sb;
+            };
+            window.MediaSource.__vi_patched__ = true;
+        }
+    } catch(e) {}
+
     console.log('[ViDownload] content script injetado');
 })();
 "#;
