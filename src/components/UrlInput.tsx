@@ -17,6 +17,7 @@ export default function UrlInput({ onAnalyze, loading }: Props) {
   return (
     <form onSubmit={handleSubmit} className="flex gap-3">
       <input
+        id="url-input"
         type="text"
         value={url}
         onChange={(e) => setUrl(e.target.value)}

@@ -51,11 +51,11 @@
 - [x] 1.6 Commit: "feat: scaffold Tauri 2 + React + TS"
 
 ### FASE 2 — Browser Embutido (Webview de Navegação)
-- [ ] 2.1 Criar componente BrowserView com barra de URL
-- [ ] 2.2 Webview secundária para navegação do usuário (onde o user abre sites)
-- [ ] 2.3 Controles: voltar, avançar, reload, URL bar
-- [ ] 2.4 Injetar content script na webview de navegação
-- [ ] 2.5 Commit: "feat: embedded browser with navigation"
+- [x] 2.1 Criar componente BrowserBar com barra de URL
+- [x] 2.2 Webview secundária via WebviewWindow (navegação do usuário)
+- [x] 2.3 Controles: voltar, avançar, reload, URL bar, fechar
+- [x] 2.4 Content script injetado (detecta fetch/XHR/DOM com m3u8/ts/mpd)
+- [x] 2.5 Commit
 
 ### FASE 3 — Detecção de Streams (Network Sniffing)
 - [ ] 3.1 Rust: proxy HTTP interceptador (usa `hyper` ou `reqwest` + `tokio`)
