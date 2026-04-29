@@ -112,34 +112,64 @@ const CONTENT_SCRIPT: &str = r#"
 const EXTRACT_JS: &str = r#"
 (function() {
     var urls = [];
-    // De __VI_DETECTED__
-    if (window.__VI_DETECTED__) {
-        window.__VI_DETECTED__.forEach(function(d) { urls.push(d.url); });
-    }
-    // De video elements
-    document.querySelectorAll('video').forEach(function(v) {
-        ['src','currentSrc'].forEach(function(p) {
-            var s = v[p];
-            if (s && /\.(m3u8|m3u|mpd)(\?|$)/i.test(s)) urls.push(s);
+    function add(u) { if (u && typeof u === 'string' && urls.indexOf(u) === -1) urls.push(u); }
+    function isStream(u) { return u && (/\.(m3u8|m3u|mpd|ts)(\?|$)/i.test(u) || /mpegurl|manifest/i.test(u)); }
+
+    // 1. Performance API — captura TODAS as requests de rede, incluindo HLS nativo
+    try {
+        performance.getEntriesByType('resource').forEach(function(e) {
+            if (isStream(e.name)) add(e.name);
         });
-    });
-    // De videojs
+    } catch(e) {}
+
+    // 2. __VI_DETECTED__ do content script
+    try {
+        if (window.__VI_DETECTED__) {
+            window.__VI_DETECTED__.forEach(function(d) { if (isStream(d.url)) add(d.url); });
+        }
+    } catch(e) {}
+
+    // 3. Video elements
+    try {
+        document.querySelectorAll('video, source').forEach(function(v) {
+            ['src','currentSrc'].forEach(function(p) { if (isStream(v[p])) add(v[p]); });
+            var a = v.getAttribute('src'); if (isStream(a)) add(a);
+        });
+    } catch(e) {}
+
+    // 4. Video.js players
     try {
         if (window.videojs && videojs.getAllPlayers) {
             videojs.getAllPlayers().forEach(function(p) {
+                try { var s = p.currentSrc(); if (isStream(s)) add(s); } catch(e) {}
+                try { var s = p.src(); if (typeof s === 'string' && isStream(s)) add(s); } catch(e) {}
                 try {
-                    var s = p.currentSrc(); if (s && /m3u8|mpd/i.test(s)) urls.push(s);
-                    var t = p.tech_; if (t && (t.vhs||t.hls)) {
-                        var vhs = t.vhs||t.hls;
-                        if (vhs.playlists && vhs.playlists.master && vhs.playlists.master.uri)
-                            urls.push(vhs.playlists.master.uri);
+                    var t = p.tech_; if (t) {
+                        if (t.vhs) {
+                            var m = t.vhs.playlists; if (m && m.master && m.master.uri) add(m.master.uri);
+                            if (m && m.media_ && m.media_.uri) add(m.media_.uri);
+                        }
+                        if (t.hls) {
+                            var m = t.hls.playlists; if (m && m.master && m.master.uri) add(m.master.uri);
+                        }
+                        if (t.currentSource_ && isStream(t.currentSource_.src)) add(t.currentSource_.src);
                     }
                 } catch(e) {}
+                try { var s = p.options_ && p.options_.sources; if (s) s.forEach(function(x) { if (isStream(x.src)) add(x.src); }); } catch(e) {}
             });
         }
     } catch(e) {}
-    // Unique
-    urls = urls.filter(function(v,i,a) { return a.indexOf(v) === i; });
+
+    // 5. Qualquer src em script/link com padrão de stream
+    try {
+        document.querySelectorAll('[src]').forEach(function(el) {
+            var s = el.getAttribute('src'); if (isStream(s)) add(s);
+        });
+    } catch(e) {}
+
+    // Filtrar apenas m3u8/mpd (não .ts individuais)
+    urls = urls.filter(function(u) { return /\.(m3u8|m3u|mpd)(\?|$)/i.test(u) || /mpegurl|manifest.*m3u/i.test(u); });
+
     if (urls.length > 0) {
         document.title = 'VI_STREAMS:' + JSON.stringify(urls);
     }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::crypto;
+use super::extractors;
 use super::m3u8;
 use super::types::*;
 
@@ -46,6 +47,32 @@ pub fn create_manager() -> SharedManager {
 pub async fn analyze(url: &str) -> Result<VideoFound, String> {
     let client = build_client()?;
 
+    // 1. Tentar extractor específico do site (UNIP, etc.)
+    if let Some(extracted) = extractors::try_extract(url).await {
+        eprintln!("[analyze] Extractor encontrou: {}", extracted.m3u8_url);
+        let resp = client
+            .get(&extracted.m3u8_url)
+            .send()
+            .await
+            .map_err(|e| format!("Erro ao buscar m3u8: {}", e))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("Erro ao ler m3u8: {}", e))?;
+
+        if m3u8::is_m3u8(&body) {
+            let mut result = analyze_m3u8(&client, &extracted.m3u8_url, &body).await?;
+            if result.title.is_none() {
+                result.title = extracted.title;
+            }
+            result.page_url = url.to_string();
+            return Ok(result);
+        }
+        // Se não é m3u8, a URL extraída pode ser de outro formato - tentar analisar
+        return analyze_m3u8(&client, &extracted.m3u8_url, &body).await;
+    }
+
+    // 2. Buscar URL diretamente
     let response = client
         .get(url)
         .send()
@@ -64,10 +91,12 @@ pub async fn analyze(url: &str) -> Result<VideoFound, String> {
         .await
         .map_err(|e| format!("Erro ao ler resposta: {}", e))?;
 
+    // 3. É um m3u8 direto?
     if m3u8::is_m3u8(&body) {
         return analyze_m3u8(&client, url, &body).await;
     }
 
+    // 4. É HTML? Escanear por m3u8 URLs
     if content_type.contains("html") {
         return analyze_html_page(&client, url, &body).await;
     }
