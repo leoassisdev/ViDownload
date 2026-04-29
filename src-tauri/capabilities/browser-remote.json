@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "browser-remote",
+  "description": "Permite que o browser webview comunique com o app via IPC",
+  "windows": ["browser"],
+  "remote": {
+    "urls": ["https://*", "http://*"]
+  },
+  "permissions": [
+    "core:default"
+  ]
+}

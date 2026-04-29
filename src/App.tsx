@@ -25,6 +25,28 @@ function App() {
   useEffect(() => {
     const unlistenNav = listen<string>("browser-navigated", (e) => setBrowserUrl(e.payload));
     const unlistenClosed = listen("browser-closed", () => { setBrowserOpen(false); setBrowserUrl(""); });
+    const unlistenStreamDetected = listen<number>("stream-detected", async () => {
+      // Quando streams são detectados no browser, buscar e mostrar
+      try {
+        const detected = await invoke<Array<{url: string; source: string}>>("get_detected_streams");
+        // Filtrar apenas m3u8/HLS
+        const hlsUrls = detected.filter(d =>
+          d.url.match(/\.(m3u8|m3u)(\?|$)/i) || d.source === 'content-script'
+        );
+        if (hlsUrls.length > 0 && !video) {
+          // Tentar analisar o primeiro m3u8 encontrado
+          const firstUrl = hlsUrls[0].url;
+          setLoading(true);
+          try {
+            const result = await invoke<VideoFound>("analyze_url", { url: firstUrl });
+            setVideo(result);
+            setSelectedStreams(new Set([result.best_quality_index]));
+            setError(null);
+          } catch (_) {}
+          setLoading(false);
+        }
+      } catch (_) {}
+    });
     const unlistenComplete = listen<{ video_id: string; path: string }>("download-complete", () => {
       setDownloading(false);
       setProgress(null);
@@ -39,6 +61,7 @@ function App() {
     return () => {
       unlistenNav.then((fn) => fn());
       unlistenClosed.then((fn) => fn());
+      unlistenStreamDetected.then((fn) => fn());
       unlistenComplete.then((fn) => fn());
       unlistenError.then((fn) => fn());
     };
@@ -216,8 +239,14 @@ function App() {
 
         {browserOpen && !video && !loading && !error && (
           <div className="max-w-5xl mx-auto px-6 py-8 text-center text-zinc-500">
-            <p className="text-lg mb-2">Navegador aberto em outra janela</p>
-            <p className="text-sm">Navegue até o vídeo que deseja baixar.</p>
+            <div className="flex flex-col items-center gap-3">
+              <svg className="animate-spin h-8 w-8 text-blue-500" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <p className="text-lg">Navegador aberto — monitorando streams...</p>
+              <p className="text-sm">Dê play no vídeo na outra janela. Quando detectarmos o stream, ele aparecerá aqui automaticamente.</p>
+            </div>
           </div>
         )}
 

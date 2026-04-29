@@ -12,11 +12,23 @@ const CONTENT_SCRIPT: &str = r#"
 
     function report(url, source) {
         if (!url || typeof url !== 'string') return;
-        if (url.startsWith('data:') || url.startsWith('blob:')) return;
+        if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('mediasource:')) return;
         const dominated = window.__VI_DETECTED__.some(d => d.url === url);
         if (dominated) return;
         window.__VI_DETECTED__.push({ url, source, ts: Date.now() });
         console.log('[ViDownload] stream detectado:', source, url);
+
+        // Reportar ao app via Tauri IPC (se disponível)
+        try {
+            if (window.__TAURI_INTERNALS__) {
+                window.__TAURI_INTERNALS__.invoke('report_detected_stream', {
+                    url: url,
+                    source: source
+                });
+            }
+        } catch(e) {
+            console.log('[ViDownload] IPC indisponível, URL armazenada localmente');
+        }
     }
 
     function isStreamUrl(url) {
