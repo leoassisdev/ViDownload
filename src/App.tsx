@@ -53,12 +53,29 @@ function App() {
     setSelectedStreams(new Set());
 
     try {
+      // 1. Tentar análise direta (m3u8 direto ou HTML scan)
       const result = await invoke<VideoFound>("analyze_url", { url });
       setVideo(result);
       setSelectedStreams(new Set([result.best_quality_index]));
-    } catch (err) {
-      const msg = typeof err === "string" ? err : JSON.stringify(err);
-      setError(msg);
+    } catch (directErr) {
+      // 2. Análise direta falhou — abrir Chrome real via CDP
+      try {
+        setError(null);
+        const streams = await invoke<Array<{url: string; type: string; contentType: string}>>(
+          "chrome_find_streams", { url, timeoutSecs: 30 }
+        );
+        if (streams.length > 0) {
+          // Analisar o primeiro m3u8 encontrado
+          const m3u8Url = streams[0].url;
+          const result = await invoke<VideoFound>("analyze_url", { url: m3u8Url });
+          setVideo(result);
+          setSelectedStreams(new Set([result.best_quality_index]));
+        } else {
+          setError("Nenhum stream encontrado");
+        }
+      } catch (chromeErr) {
+        setError(typeof chromeErr === "string" ? chromeErr : JSON.stringify(chromeErr));
+      }
     } finally {
       setLoading(false);
     }
