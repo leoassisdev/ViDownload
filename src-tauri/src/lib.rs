@@ -1,4 +1,5 @@
 mod browser;
+mod callback_server;
 mod commands;
 mod engine;
 
@@ -24,18 +25,24 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(BrowserState::default())
-        .manage(sniffer_state)
+        .manage(sniffer_state.clone())
         .manage(download_manager)
+        .setup(move |app| {
+            // Iniciar servidor de callback local para receber URLs do content script
+            let handle = app.handle().clone();
+            let sniffer = sniffer_state.clone();
+            tokio::spawn(async move {
+                callback_server::start(handle, sniffer).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
-            // Análise
             analyze_url,
-            // Downloads
             start_download,
             cancel_download,
             pause_download,
             resume_download,
             get_download_progress,
-            // Browser
             open_browser,
             close_browser,
             browser_navigate,
@@ -44,7 +51,6 @@ pub fn run() {
             browser_reload,
             browser_get_url,
             browser_poll_detected,
-            // Sniffer
             get_detected_streams,
             clear_detected_streams,
             report_detected_stream,

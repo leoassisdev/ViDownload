@@ -18,17 +18,17 @@ const CONTENT_SCRIPT: &str = r#"
         window.__VI_DETECTED__.push({ url, source, ts: Date.now() });
         console.log('[ViDownload] stream detectado:', source, url);
 
-        // Reportar ao app via Tauri IPC (se disponível)
+        // Enviar para o servidor de callback local (funciona sem IPC)
+        try {
+            new Image().src = 'http://127.0.0.1:17377/detected?url=' + encodeURIComponent(url) + '&source=' + encodeURIComponent(source);
+        } catch(e) {}
+
+        // Tentar IPC também (caso esteja disponível)
         try {
             if (window.__TAURI_INTERNALS__) {
-                window.__TAURI_INTERNALS__.invoke('report_detected_stream', {
-                    url: url,
-                    source: source
-                });
+                window.__TAURI_INTERNALS__.invoke('report_detected_stream', { url: url, source: source });
             }
-        } catch(e) {
-            console.log('[ViDownload] IPC indisponível, URL armazenada localmente');
-        }
+        } catch(e) {}
     }
 
     function isStreamUrl(url) {
@@ -101,6 +101,60 @@ const CONTENT_SCRIPT: &str = r#"
             window.MediaSource.__vi_patched__ = true;
         }
     } catch(e) {}
+
+    // Interceptar HTMLMediaElement.src (captura HLS nativo no WKWebView)
+    try {
+        const origSrcDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
+        if (origSrcDesc && origSrcDesc.set) {
+            const origSet = origSrcDesc.set;
+            Object.defineProperty(HTMLMediaElement.prototype, 'src', {
+                set: function(val) {
+                    if (isStreamUrl(val)) report(val, 'video-src');
+                    return origSet.call(this, val);
+                },
+                get: origSrcDesc.get,
+                configurable: true
+            });
+        }
+    } catch(e) {}
+
+    // Interceptar HTMLSourceElement.src
+    try {
+        const origSrcDesc = Object.getOwnPropertyDescriptor(HTMLSourceElement.prototype, 'src');
+        if (origSrcDesc && origSrcDesc.set) {
+            const origSet = origSrcDesc.set;
+            Object.defineProperty(HTMLSourceElement.prototype, 'src', {
+                set: function(val) {
+                    if (isStreamUrl(val)) report(val, 'source-src');
+                    return origSet.call(this, val);
+                },
+                get: origSrcDesc.get,
+                configurable: true
+            });
+        }
+    } catch(e) {}
+
+    // Polling: varrer <video> existentes a cada 2s
+    setInterval(function() {
+        document.querySelectorAll('video, source').forEach(function(el) {
+            var s = el.src || el.currentSrc || el.getAttribute('src') || '';
+            if (isStreamUrl(s)) report(s, 'poll');
+        });
+        // Também verificar player videojs
+        try {
+            if (window.videojs) {
+                var players = videojs.getAllPlayers ? videojs.getAllPlayers() : [];
+                players.forEach(function(p) {
+                    var tech = p.tech_;
+                    if (tech && tech.sourceHandler_ && tech.sourceHandler_.src) {
+                        report(tech.sourceHandler_.src, 'videojs');
+                    }
+                    var src = p.currentSrc ? p.currentSrc() : '';
+                    if (isStreamUrl(src)) report(src, 'videojs-src');
+                });
+            }
+        } catch(e) {}
+    }, 2000);
 
     console.log('[ViDownload] content script injetado');
 })();
