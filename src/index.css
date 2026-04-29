@@ -1,1 +1,255 @@
 @import "tailwindcss";
+
+/* ===== Terminal Loader ===== */
+@keyframes blinkCursor {
+  50% {
+    border-right-color: transparent;
+  }
+}
+
+@keyframes typeAndDelete {
+  0%,
+  10% {
+    width: 0;
+  }
+  45%,
+  55% {
+    width: 6.2em;
+  }
+  90%,
+  100% {
+    width: 0;
+  }
+}
+
+.terminal-loader {
+  border: 0.1em solid #333;
+  background-color: #1a1a1a;
+  color: #0f0;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 1em;
+  padding: 1.5em 1em;
+  width: 12em;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.terminal-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1.5em;
+  background-color: #333;
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+  padding: 0 0.4em;
+  box-sizing: border-box;
+}
+
+.terminal-controls {
+  float: right;
+}
+
+.control {
+  display: inline-block;
+  width: 0.6em;
+  height: 0.6em;
+  margin-left: 0.4em;
+  border-radius: 50%;
+  background-color: #777;
+}
+
+.control.close {
+  background-color: #e33;
+}
+
+.control.minimize {
+  background-color: #ee0;
+}
+
+.control.maximize {
+  background-color: #0b0;
+}
+
+.terminal-title {
+  float: left;
+  line-height: 1.5em;
+  color: #eee;
+  font-size: 0.7em;
+}
+
+.text {
+  display: inline-block;
+  white-space: nowrap;
+  overflow: hidden;
+  border-right: 0.2em solid green;
+  animation:
+    typeAndDelete 4s steps(11) infinite,
+    blinkCursor 0.5s step-end infinite alternate;
+  margin-top: 1.5em;
+}
+
+/* ===== 3D Cube Loader ===== */
+.cube-wrapper {
+  width: 100px;
+  height: 100px;
+  position: relative;
+}
+
+.loader {
+  --size: 100px;
+  width: var(--size);
+  height: var(--size);
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: 50% 50%;
+  transform-style: preserve-3d;
+  perspective: 5000px;
+  animation: rotar 10s linear infinite alternate both;
+}
+
+.loader .side {
+  width: var(--size);
+  height: var(--size);
+  position: absolute;
+  background: repeating-linear-gradient(
+      to right,
+      transparent 1% 9%,
+      #0f0 9% 10%
+    ),
+    repeating-linear-gradient(to top, transparent 1% 9%, #0f0 9% 10%);
+  background-color: #0008;
+}
+
+.loader .behind {
+  transform: translateZ(calc(-1 * var(--size)));
+}
+
+.loader .right {
+  transform-origin: 100% 50%;
+  transform: rotateY(-90deg);
+}
+
+.loader .left {
+  transform-origin: 0% 50%;
+  transform: rotateY(90deg);
+}
+
+.loader .top {
+  transform-origin: 50% 0;
+  transform: rotateX(-90deg);
+}
+
+.loader .bottom {
+  transform-origin: 50% 100%;
+  transform: rotateX(90deg);
+}
+
+@keyframes rotar {
+  0% {
+    transform: translate(-50%, -50%) rotateX(0deg) rotateY(0deg);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotateX(360deg) rotateY(360deg);
+  }
+}
+
+/* ===== Server Ghost ===== */
+.container_SevMini {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+}
+
+.Ghost {
+  transform: translate(0px, -25px);
+  z-index: -1;
+  animation: opacidad 4s infinite ease-in-out;
+}
+
+@keyframes opacidad {
+  0% {
+    opacity: 1;
+    scale: 1;
+  }
+  50% {
+    opacity: 0.5;
+    scale: 0.9;
+  }
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes estroboscopico {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+  51% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes rebote {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes estroboscopico1 {
+  0%,
+  50%,
+  100% {
+    fill: rgb(255, 95, 74);
+  }
+  25%,
+  75% {
+    fill: rgb(16, 53, 115);
+  }
+}
+
+@keyframes estroboscopico2 {
+  0%,
+  50%,
+  100% {
+    fill: #17e300;
+  }
+  25%,
+  75% {
+    fill: #17e300b4;
+  }
+}
+
+.SevMini {
+  animation: rebote 4s infinite ease-in-out;
+}
+
+#strobe_led1 {
+  animation: estroboscopico 0.5s infinite;
+}
+
+#strobe_color1 {
+  animation: estroboscopico2 0.8s infinite;
+}
+
+#strobe_color3 {
+  animation: estroboscopico1 0.8s infinite;
+  animation-delay: 3s;
+}

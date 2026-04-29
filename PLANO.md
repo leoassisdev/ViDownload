@@ -44,11 +44,11 @@
 
 ### FASE 1 — Scaffold & Infra
 - [x] 1.1 Criar repo git + .gitignore
-- [ ] 1.2 Init Tauri 2 + React + TypeScript (pnpm)
-- [ ] 1.3 Estrutura de pastas (src-tauri, src/components, src/hooks, src/lib)
-- [ ] 1.4 Configurar Tauri: permissões, webview, window config
-- [ ] 1.5 Build dev rodando (tauri dev)
-- [ ] 1.6 Commit: "feat: scaffold Tauri 2 + React + TS"
+- [x] 1.2 Init Tauri 2 + React + TypeScript (pnpm)
+- [x] 1.3 Estrutura de pastas (src-tauri, src/components, src/hooks, src/lib)
+- [x] 1.4 Configurar Tauri: permissões, webview, window config
+- [x] 1.5 Build dev rodando (tauri dev)
+- [x] 1.6 Commit: "feat: scaffold Tauri 2 + React + TS"
 
 ### FASE 2 — Browser Embutido (Webview de Navegação)
 - [ ] 2.1 Criar componente BrowserView com barra de URL

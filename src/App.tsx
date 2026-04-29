@@ -2,6 +2,9 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import UrlInput from "./components/UrlInput";
 import StreamList from "./components/StreamList";
+import TerminalLoader from "./components/TerminalLoader";
+import CubeLoader from "./components/CubeLoader";
+import PosterWall from "./components/PosterWall";
 import type { VideoFound } from "./types";
 
 function App() {
@@ -19,7 +22,6 @@ function App() {
     try {
       const result = await invoke<VideoFound>("analyze_url", { url });
       setVideo(result);
-      // Auto-select best quality
       setSelectedStreams(new Set([result.best_quality_index]));
     } catch (err) {
       setError(typeof err === "string" ? err : "Erro ao analisar URL");
@@ -31,84 +33,120 @@ function App() {
   const handleToggleStream = (index: number) => {
     setSelectedStreams((prev) => {
       const next = new Set(prev);
-      if (next.has(index)) {
-        next.delete(index);
-      } else {
-        next.add(index);
-      }
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
       return next;
     });
   };
 
   const handleSelectAll = () => {
     if (!video) return;
-    if (selectedStreams.size === video.streams.length) {
-      setSelectedStreams(new Set());
-    } else {
-      setSelectedStreams(new Set(video.streams.map((_, i) => i)));
-    }
+    if (selectedStreams.size === video.streams.length) setSelectedStreams(new Set());
+    else setSelectedStreams(new Set(video.streams.map((_, i) => i)));
   };
 
   const handleDownload = async () => {
     if (!video) return;
-    // TODO: Phase 5 — open save dialog, start downloads
     console.log("Download streams:", [...selectedStreams]);
   };
 
+  const showEmptyState = !loading && !video && !error;
+
   return (
-    <div className="min-h-screen bg-zinc-900 text-zinc-100">
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col">
       {/* Header */}
-      <header className="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur-sm sticky top-0 z-10">
+      <header className="border-b border-zinc-800/60 bg-zinc-950/90 backdrop-blur-sm sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-6 py-4">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center">
-              <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-            </div>
-            <h1 className="text-xl font-bold text-white">ViDownload</h1>
-            <span className="text-xs text-zinc-500 mt-1">v0.1.0</span>
+            <img
+              src="/app-icon.png"
+              alt="ViDownload"
+              className="w-9 h-9 rounded-lg shadow-lg shadow-violet-500/20"
+            />
+            <h1 className="text-xl font-bold text-white tracking-tight">ViDownload</h1>
+            <span className="text-[10px] text-zinc-600 font-mono mt-1">v0.1.0</span>
           </div>
           <UrlInput onAnalyze={handleAnalyze} loading={loading} />
         </div>
       </header>
 
       {/* Content */}
-      <main className="max-w-5xl mx-auto px-6 py-6">
+      <main className="flex-1 relative">
+        {/* Error */}
         {error && (
-          <div className="p-4 bg-red-900/30 border border-red-800 rounded-lg text-red-300">
-            {error}
+          <div className="max-w-5xl mx-auto px-6 py-6">
+            <div className="p-4 bg-red-950/40 border border-red-900/50 rounded-lg text-red-400 flex items-center gap-3">
+              <svg className="w-5 h-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+              {error}
+            </div>
           </div>
         )}
 
+        {/* Loading — Terminal + Cube */}
         {loading && !video && (
-          <div className="flex flex-col items-center justify-center py-20 text-zinc-500">
-            <svg className="animate-spin h-10 w-10 mb-4" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <p>Analisando URL...</p>
+          <div className="flex flex-col items-center justify-center py-16 gap-10">
+            <div className="flex items-center gap-12">
+              <CubeLoader />
+              <div className="ml-8">
+                <TerminalLoader text="Scanning..." />
+              </div>
+            </div>
+            <p className="text-zinc-500 text-sm font-mono mt-4">Analisando streams na URL...</p>
           </div>
         )}
 
-        {!loading && !video && !error && (
-          <div className="flex flex-col items-center justify-center py-20 text-zinc-600">
-            <svg className="w-16 h-16 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m9.86-2.04a4.5 4.5 0 00-6.364-6.364L6.188 6.07a4.5 4.5 0 001.242 7.244" />
-            </svg>
-            <p className="text-lg">Cole um link para começar</p>
-            <p className="text-sm mt-1">Suporta HLS, m3u8 e páginas com vídeo</p>
+        {/* Empty state — 3D Poster Wall + Branding overlay */}
+        {showEmptyState && (
+          <div className="absolute inset-0 top-0">
+            <PosterWall />
+
+            {/* Gradient overlay */}
+            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/60 to-zinc-950/30 pointer-events-none" />
+
+            {/* Branding center */}
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
+              <img
+                src="/app-icon.png"
+                alt="ViDownload"
+                className="w-24 h-24 rounded-2xl shadow-2xl shadow-violet-500/30 mb-6"
+              />
+              <h2 className="text-4xl font-bold text-white tracking-tight mb-2 drop-shadow-lg">
+                ViDownload
+              </h2>
+              <p className="text-zinc-400 text-lg drop-shadow-md">
+                Cole um link para baixar qualquer vídeo
+              </p>
+              <div className="flex gap-3 mt-4">
+                <span className="px-3 py-1 text-xs bg-zinc-800/80 text-zinc-400 rounded-full border border-zinc-700/50">
+                  HLS
+                </span>
+                <span className="px-3 py-1 text-xs bg-zinc-800/80 text-zinc-400 rounded-full border border-zinc-700/50">
+                  m3u8
+                </span>
+                <span className="px-3 py-1 text-xs bg-zinc-800/80 text-zinc-400 rounded-full border border-zinc-700/50">
+                  MP4
+                </span>
+                <span className="px-3 py-1 text-xs bg-zinc-800/80 text-zinc-400 rounded-full border border-zinc-700/50">
+                  AES-128
+                </span>
+              </div>
+            </div>
           </div>
         )}
 
+        {/* Results */}
         {video && (
-          <StreamList
-            video={video}
-            selectedStreams={selectedStreams}
-            onToggleStream={handleToggleStream}
-            onSelectAll={handleSelectAll}
-            onDownload={handleDownload}
-          />
+          <div className="max-w-5xl mx-auto px-6 py-6">
+            <StreamList
+              video={video}
+              selectedStreams={selectedStreams}
+              onToggleStream={handleToggleStream}
+              onSelectAll={handleSelectAll}
+              onDownload={handleDownload}
+            />
+          </div>
         )}
       </main>
     </div>
