@@ -51,7 +51,7 @@ const detected = new Map(); // url -> { url, type, contentType }
 try {
   const browser = await puppeteer.launch({
     executablePath: chromePath,
-    headless: false, // Visível para o usuário interagir se necessário
+    headless: 'new', // Invisível para o usuário
     args: [
       '--no-first-run',
       '--no-default-browser-check',
