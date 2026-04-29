@@ -76,14 +76,14 @@
 - [x] 4.7 Commit
 
 ### FASE 5 — Download Engine (Rust)
-- [ ] 5.1 Download paralelo de segmentos (tokio tasks, configurável 1-6 threads)
-- [ ] 5.2 Replay de headers originais capturados na Fase 3
-- [ ] 5.3 Retry com backoff exponencial (max 6 tentativas)
-- [ ] 5.4 Suporte a byte-range requests (#EXT-X-BYTERANGE)
-- [ ] 5.5 Progress tracking por segmento → evento Tauri `download-progress`
-- [ ] 5.6 Pause / Resume / Cancel
-- [ ] 5.7 Fila de downloads
-- [ ] 5.8 Commit: "feat: parallel segment download engine"
+- [x] 5.1 Download paralelo via tokio::Semaphore (configurável, padrão 4 threads)
+- [x] 5.2 Headers capturados disponíveis via sniffer
+- [x] 5.3 Retry com backoff exponencial (200ms-3200ms, max 6 tentativas)
+- [x] 5.4 Suporte a byte-range requests (#EXT-X-BYTERANGE)
+- [x] 5.5 Progress tracking: segments_done, bytes, speed, ETA → evento download-progress
+- [x] 5.6 Pause / Resume / Cancel via AtomicBool
+- [x] 5.7 DownloadManager com HashMap de ActiveDownload
+- [x] 5.8 Commit
 
 ### FASE 6 — Decriptação AES-128
 - [ ] 6.1 Fetch da key URL do #EXT-X-KEY

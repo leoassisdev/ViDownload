@@ -6,6 +6,7 @@ interface Props {
   onToggleStream: (index: number) => void;
   onSelectAll: () => void;
   onDownload: () => void;
+  downloading?: boolean;
 }
 
 export default function StreamList({
@@ -14,6 +15,7 @@ export default function StreamList({
   onToggleStream,
   onSelectAll,
   onDownload,
+  downloading = false,
 }: Props) {
   const formatDuration = (seconds: number): string => {
     if (seconds <= 0) return "--:--";
@@ -50,10 +52,10 @@ export default function StreamList({
           )}
           <button
             onClick={onDownload}
-            disabled={selectedStreams.size === 0}
+            disabled={selectedStreams.size === 0 || downloading}
             className="px-5 py-2 bg-green-600 hover:bg-green-500 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-semibold rounded-lg transition-colors"
           >
-            Baixar {selectedStreams.size > 1 ? `(${selectedStreams.size})` : ""}
+            {downloading ? "Baixando..." : `Baixar${selectedStreams.size > 1 ? ` (${selectedStreams.size})` : ""}`}
           </button>
         </div>
       </div>

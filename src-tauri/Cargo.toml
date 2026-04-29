@@ -26,6 +26,7 @@ cbc = "0.1"
 byteorder = "1"
 bytes = "1"
 regex-lite = "0.1"
+tauri-plugin-dialog = "2.7.0"
 
 [profile.release]
 strip = true

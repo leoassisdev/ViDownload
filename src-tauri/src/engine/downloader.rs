@@ -1,43 +1,55 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::m3u8;
 use super::types::*;
 
-/// Shared state for active downloads
+/// Estado de um download ativo
+pub struct ActiveDownload {
+    pub video_id: String,
+    pub stream: StreamInfo,
+    pub output_path: PathBuf,
+    pub segments_done: AtomicU64,
+    pub bytes_downloaded: AtomicU64,
+    pub cancelled: AtomicBool,
+    pub paused: AtomicBool,
+    pub state: Mutex<DownloadState>,
+    pub started_at: std::time::Instant,
+}
+
+/// Gerenciador de downloads
 pub struct DownloadManager {
-    pub videos: HashMap<String, VideoFound>,
-    pub progress: HashMap<String, DownloadProgress>,
-    pub cancel_flags: HashMap<String, bool>,
+    pub downloads: Mutex<HashMap<String, Arc<ActiveDownload>>>,
+    pub max_parallel: usize,
 }
 
 impl DownloadManager {
     pub fn new() -> Self {
         Self {
-            videos: HashMap::new(),
-            progress: HashMap::new(),
-            cancel_flags: HashMap::new(),
+            downloads: Mutex::new(HashMap::new()),
+            max_parallel: 4,
         }
     }
 }
 
-pub type SharedManager = Arc<Mutex<DownloadManager>>;
+pub type SharedManager = Arc<DownloadManager>;
 
 pub fn create_manager() -> SharedManager {
-    Arc::new(Mutex::new(DownloadManager::new()))
+    Arc::new(DownloadManager::new())
 }
 
-/// Analyze a URL: fetch the page/m3u8, detect streams, return available qualities
+/// Analisa uma URL: busca a página/m3u8, detecta streams, retorna qualidades disponíveis
 pub async fn analyze(url: &str) -> Result<VideoFound, String> {
     let client = build_client()?;
 
-    // First, try fetching the URL directly (might be a direct m3u8 link)
     let response = client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch URL: {}", e))?;
+        .map_err(|e| format!("Erro ao acessar URL: {}", e))?;
 
     let content_type = response
         .headers()
@@ -49,19 +61,238 @@ pub async fn analyze(url: &str) -> Result<VideoFound, String> {
     let body = response
         .text()
         .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+        .map_err(|e| format!("Erro ao ler resposta: {}", e))?;
 
-    // Check if it's a direct m3u8
     if m3u8::is_m3u8(&body) {
         return analyze_m3u8(&client, url, &body).await;
     }
 
-    // If it's an HTML page, scan for m3u8 URLs embedded in the page
     if content_type.contains("html") {
         return analyze_html_page(&client, url, &body).await;
     }
 
-    Err("No HLS streams found at this URL".to_string())
+    Err("Nenhum stream HLS encontrado nesta URL".to_string())
+}
+
+/// Baixa todos os segmentos de um stream em paralelo
+pub async fn download_stream(
+    active: Arc<ActiveDownload>,
+    parallel: usize,
+) -> Result<PathBuf, String> {
+    let client = build_client()?;
+    let segments = active.stream.segments.clone();
+    let total = segments.len() as u64;
+
+    if total == 0 {
+        return Err("Nenhum segmento para baixar".to_string());
+    }
+
+    *active.state.lock().await = DownloadState::Downloading;
+
+    // Criar diretório temporário para segmentos
+    let temp_dir = active.output_path.with_extension("parts");
+    tokio::fs::create_dir_all(&temp_dir)
+        .await
+        .map_err(|e| format!("Erro ao criar diretório: {}", e))?;
+
+    // Baixar init segment se existir (fMP4)
+    if let Some(ref init_url) = active.stream.init_segment_url {
+        let init_path = temp_dir.join("init.mp4");
+        download_segment_with_retry(&client, init_url, &init_path, &active, None).await?;
+    }
+
+    // Download paralelo com semáforo
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel));
+    let mut handles = Vec::new();
+
+    for (i, segment) in segments.iter().enumerate() {
+        if active.cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+
+        // Esperar enquanto pausado
+        while active.paused.load(Ordering::Relaxed) {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if active.cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let seg = segment.clone();
+        let seg_path = temp_dir.join(format!("seg_{:06}.ts", i));
+        let client = client.clone();
+        let active = active.clone();
+
+        let handle = tokio::spawn(async move {
+            let result = download_segment_with_retry(
+                &client,
+                &seg.url,
+                &seg_path,
+                &active,
+                seg.byte_range.as_ref(),
+            )
+            .await;
+
+            drop(permit);
+
+            if result.is_ok() {
+                active.segments_done.fetch_add(1, Ordering::Relaxed);
+            }
+
+            result
+        });
+
+        handles.push(handle);
+    }
+
+    // Esperar todos terminarem
+    let mut errors = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => errors.push(e),
+            Err(e) => errors.push(format!("Task falhou: {}", e)),
+        }
+    }
+
+    if active.cancelled.load(Ordering::Relaxed) {
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+        *active.state.lock().await = DownloadState::Cancelled;
+        return Err("Download cancelado".to_string());
+    }
+
+    if !errors.is_empty() {
+        *active.state.lock().await = DownloadState::Error(errors[0].clone());
+        return Err(errors[0].clone());
+    }
+
+    // Concatenar segmentos no arquivo final
+    *active.state.lock().await = DownloadState::Muxing;
+    concatenate_segments(&temp_dir, &active.output_path, total, active.stream.init_segment_url.is_some())
+        .await?;
+
+    // Limpar temp
+    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+
+    *active.state.lock().await = DownloadState::Done;
+    Ok(active.output_path.clone())
+}
+
+/// Baixa um segmento com retry e backoff exponencial
+async fn download_segment_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    path: &PathBuf,
+    active: &ActiveDownload,
+    byte_range: Option<&ByteRange>,
+) -> Result<(), String> {
+    let max_retries = 6;
+    let mut attempt = 0;
+
+    loop {
+        if active.cancelled.load(Ordering::Relaxed) {
+            return Err("Cancelado".to_string());
+        }
+
+        match download_segment(client, url, path, byte_range).await {
+            Ok(bytes) => {
+                active.bytes_downloaded.fetch_add(bytes, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= max_retries {
+                    return Err(format!("Falhou após {} tentativas: {}", max_retries, e));
+                }
+                // Backoff exponencial: 200ms, 400ms, 800ms, 1600ms, 3200ms
+                let delay = std::time::Duration::from_millis(200 * (1 << attempt));
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
+/// Baixa um único segmento
+async fn download_segment(
+    client: &reqwest::Client,
+    url: &str,
+    path: &PathBuf,
+    byte_range: Option<&ByteRange>,
+) -> Result<u64, String> {
+    let mut request = client.get(url);
+
+    if let Some(br) = byte_range {
+        let range = format!("bytes={}-{}", br.offset, br.offset + br.length - 1);
+        request = request.header("Range", range);
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Erro HTTP: {}", e))?;
+
+    if !response.status().is_success() && response.status().as_u16() != 206 {
+        return Err(format!("HTTP {}", response.status()));
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Erro ao ler: {}", e))?;
+
+    let size = bytes.len() as u64;
+    tokio::fs::write(path, &bytes)
+        .await
+        .map_err(|e| format!("Erro ao salvar: {}", e))?;
+
+    Ok(size)
+}
+
+/// Concatena todos os segmentos em um arquivo final
+async fn concatenate_segments(
+    temp_dir: &PathBuf,
+    output: &PathBuf,
+    total: u64,
+    has_init: bool,
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut file = tokio::fs::File::create(output)
+        .await
+        .map_err(|e| format!("Erro ao criar arquivo: {}", e))?;
+
+    // Escrever init segment primeiro se existir
+    if has_init {
+        let init_path = temp_dir.join("init.mp4");
+        if init_path.exists() {
+            let data = tokio::fs::read(&init_path)
+                .await
+                .map_err(|e| format!("Erro ao ler init: {}", e))?;
+            file.write_all(&data)
+                .await
+                .map_err(|e| format!("Erro ao escrever init: {}", e))?;
+        }
+    }
+
+    // Concatenar segmentos em ordem
+    for i in 0..total {
+        let seg_path = temp_dir.join(format!("seg_{:06}.ts", i));
+        if seg_path.exists() {
+            let data = tokio::fs::read(&seg_path)
+                .await
+                .map_err(|e| format!("Erro ao ler segmento {}: {}", i, e))?;
+            file.write_all(&data)
+                .await
+                .map_err(|e| format!("Erro ao escrever segmento {}: {}", i, e))?;
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| format!("Erro ao finalizar: {}", e))?;
+
+    Ok(())
 }
 
 async fn analyze_m3u8(
@@ -72,10 +303,8 @@ async fn analyze_m3u8(
     let video_id = generate_id();
 
     if m3u8::is_master_playlist(content) {
-        // Master playlist → multiple quality options
         let mut streams = m3u8::parse_master_playlist(content, url);
 
-        // Fetch info de segmentos para cada stream
         for stream in &mut streams {
             if let Ok(resp) = client.get(&stream.url).send().await {
                 if let Ok(body) = resp.text().await {
@@ -91,17 +320,14 @@ async fn analyze_m3u8(
             }
         }
 
-        let best_idx = 0; // Already sorted by bandwidth desc
-
         Ok(VideoFound {
             id: video_id,
             page_url: url.to_string(),
             streams,
             title: None,
-            best_quality_index: best_idx,
+            best_quality_index: 0,
         })
     } else {
-        // Media playlist única
         let result = m3u8::parse_media_playlist(content, url);
 
         let stream = StreamInfo {
@@ -134,11 +360,10 @@ async fn analyze_html_page(
     page_url: &str,
     html: &str,
 ) -> Result<VideoFound, String> {
-    // Extract m3u8 URLs from HTML/JS source
     let m3u8_urls = extract_m3u8_urls(html, page_url);
 
     if m3u8_urls.is_empty() {
-        return Err("No HLS streams found in page".to_string());
+        return Err("Nenhum stream HLS encontrado na página".to_string());
     }
 
     let video_id = generate_id();
@@ -175,12 +400,10 @@ async fn analyze_html_page(
     }
 
     if all_streams.is_empty() {
-        return Err("Found m3u8 URLs but could not parse any streams".to_string());
+        return Err("Encontrou URLs m3u8 mas não conseguiu parsear nenhum stream".to_string());
     }
 
     all_streams.sort_by(|a, b| b.bandwidth.cmp(&a.bandwidth));
-
-    // Try to extract page title
     let title = extract_title(html);
 
     Ok(VideoFound {
@@ -192,17 +415,12 @@ async fn analyze_html_page(
     })
 }
 
-/// Extract m3u8 URLs from HTML/JS content
 fn extract_m3u8_urls(html: &str, base_url: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    // Pattern: anything that looks like a URL ending in .m3u8
-    // Matches both quoted strings and unquoted URLs
     let patterns = [
-        // Quoted URLs
         r#"["']([^"']*\.m3u8[^"']*?)["']"#,
-        // src= or href= attributes
         r#"(?:src|href)\s*=\s*["']([^"']*\.m3u8[^"']*?)["']"#,
     ];
 
@@ -257,7 +475,7 @@ fn build_client() -> Result<reqwest::Client, String> {
         .redirect(reqwest::redirect::Policy::limited(10))
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))
+        .map_err(|e| format!("Erro ao criar cliente HTTP: {}", e))
 }
 
 fn generate_id() -> String {
