@@ -22,6 +22,9 @@ Thumbs.db
 .idea
 *.sw?
 
+# Plano interno
+PLANO.md
+
 # Logs
 *.log
 npm-debug.log*

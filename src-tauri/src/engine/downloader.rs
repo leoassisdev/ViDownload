@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use super::crypto;
 use super::m3u8;
 use super::types::*;
 
@@ -101,6 +102,9 @@ pub async fn download_stream(
         download_segment_with_retry(&client, init_url, &init_path, &active, None).await?;
     }
 
+    // Cache de chaves AES
+    let key_cache = Arc::new(KeyCache::new());
+
     // Download paralelo com semáforo
     let semaphore = Arc::new(tokio::sync::Semaphore::new(parallel));
     let mut handles = Vec::new();
@@ -110,7 +114,6 @@ pub async fn download_stream(
             break;
         }
 
-        // Esperar enquanto pausado
         while active.paused.load(Ordering::Relaxed) {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             if active.cancelled.load(Ordering::Relaxed) {
@@ -123,6 +126,7 @@ pub async fn download_stream(
         let seg_path = temp_dir.join(format!("seg_{:06}.ts", i));
         let client = client.clone();
         let active = active.clone();
+        let key_cache = key_cache.clone();
 
         let handle = tokio::spawn(async move {
             let result = download_segment_with_retry(
@@ -133,6 +137,31 @@ pub async fn download_stream(
                 seg.byte_range.as_ref(),
             )
             .await;
+
+            // Decriptar se necessário
+            if result.is_ok() && seg.key.is_some() {
+                let data = tokio::fs::read(&seg_path).await.map_err(|e| e.to_string());
+                if let Ok(data) = data {
+                    let decrypted = decrypt_segment_if_needed(
+                        &client,
+                        &data,
+                        seg.key.as_ref(),
+                        seg.sequence,
+                        &key_cache,
+                    )
+                    .await;
+
+                    match decrypted {
+                        Ok(dec) => {
+                            let _ = tokio::fs::write(&seg_path, &dec).await;
+                        }
+                        Err(e) => {
+                            drop(permit);
+                            return Err(format!("Decriptação falhou seg {}: {}", i, e));
+                        }
+                    }
+                }
+            }
 
             drop(permit);
 
@@ -179,7 +208,7 @@ pub async fn download_stream(
     Ok(active.output_path.clone())
 }
 
-/// Baixa um segmento com retry e backoff exponencial
+/// Baixa um segmento com retry e backoff exponencial, decriptando se necessário
 async fn download_segment_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -205,12 +234,65 @@ async fn download_segment_with_retry(
                 if attempt >= max_retries {
                     return Err(format!("Falhou após {} tentativas: {}", max_retries, e));
                 }
-                // Backoff exponencial: 200ms, 400ms, 800ms, 1600ms, 3200ms
                 let delay = std::time::Duration::from_millis(200 * (1 << attempt));
                 tokio::time::sleep(delay).await;
             }
         }
     }
+}
+
+/// Cache de chaves AES já baixadas
+struct KeyCache {
+    keys: std::sync::Mutex<HashMap<String, [u8; 16]>>,
+}
+
+impl KeyCache {
+    fn new() -> Self {
+        Self {
+            keys: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn get_or_fetch(
+        &self,
+        client: &reqwest::Client,
+        key_url: &str,
+    ) -> Result<[u8; 16], String> {
+        {
+            let cache = self.keys.lock().unwrap();
+            if let Some(key) = cache.get(key_url) {
+                return Ok(*key);
+            }
+        }
+
+        let key = crypto::fetch_key(client, key_url).await?;
+        self.keys.lock().unwrap().insert(key_url.to_string(), key);
+        Ok(key)
+    }
+}
+
+/// Decripta um segmento se tiver chave AES
+async fn decrypt_segment_if_needed(
+    client: &reqwest::Client,
+    data: &[u8],
+    key_info: Option<&EncryptionKey>,
+    sequence: u64,
+    key_cache: &KeyCache,
+) -> Result<Vec<u8>, String> {
+    let key_info = match key_info {
+        Some(k) if k.method == "AES-128" => k,
+        _ => return Ok(data.to_vec()),
+    };
+
+    let key = key_cache.get_or_fetch(client, &key_info.uri).await?;
+
+    let iv = if let Some(ref iv_hex) = key_info.iv {
+        crypto::parse_iv_hex(iv_hex)?
+    } else {
+        crypto::iv_from_sequence(sequence)
+    };
+
+    crypto::decrypt_aes128_cbc(data, &key, &iv)
 }
 
 /// Baixa um único segmento
