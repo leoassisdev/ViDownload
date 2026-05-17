@@ -17,29 +17,26 @@ pub async fn try_extract(url: &str) -> Option<ExtractResult> {
     None
 }
 
-/// Extractor UNIP — chama a API diretamente
+/// Extractor UNIP — chama a API tvweb3 diretamente (não requer auth)
 async fn extract_unip(url: &str) -> Option<ExtractResult> {
     let parsed = url::Url::parse(url).ok()?;
     let params: HashMap<String, String> = parsed.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect();
 
     let video_id = params.get("id")?;
-    let token = params.get("token")?;
 
-    let api_url = format!(
-        "https://api.unip.br/sistemas/ava/servico/video/transmissao/{}",
-        video_id
-    );
+    // API pública do tvweb3 — retorna JSON com midias[].local contendo o m3u8
+    let api_url = format!("https://tvweb3.unip.br/api/transmissao/{}", video_id);
+
+    eprintln!("[extractor:unip] Chamando API: {}", api_url);
 
     let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15")
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .build()
         .ok()?;
 
     let response = client
         .get(&api_url)
-        .header("Authorization", format!("Bearer {}", token))
-        .header("ChavePublica", "HHMWqVULA0gtGujnz9J1x2LKTGaZxShrPiHfma1Jafu8QesvlE1RVEBPZZLL1NmIfEGpBFuTFtz6wq5IBTxsR4rTqxDuE4WHfWmV")
-        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Accept", "application/json")
         .send()
         .await
         .ok()?;
@@ -50,16 +47,62 @@ async fn extract_unip(url: &str) -> Option<ExtractResult> {
     }
 
     let body = response.text().await.ok()?;
-    eprintln!("[extractor:unip] Resposta da API: {}", &body[..body.len().min(500)]);
+    eprintln!("[extractor:unip] Resposta: {}", &body[..body.len().min(500)]);
 
-    // Tentar parsear como JSON e encontrar a URL do vídeo
-    // A resposta pode ter vários formatos, vamos tentar extrair qualquer URL de streaming
+    // Parsear JSON e extrair m3u8 de midias[].local
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+        // Extrair título
+        let title = json.get("titulo")
+            .or_else(|| json.get("nome"))
+            .or_else(|| json.get("title"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Buscar m3u8 em midias[].local
+        if let Some(midias) = json.get("midias").and_then(|v| v.as_array()) {
+            for midia in midias {
+                if let Some(url_midia) = midia.get("local").and_then(|v| v.as_str()) {
+                    if url_midia.contains(".m3u8") || url_midia.contains("m3u8") {
+                        eprintln!("[extractor:unip] m3u8 encontrado: {}", url_midia);
+                        return Some(ExtractResult {
+                            m3u8_url: url_midia.to_string(),
+                            title,
+                            headers: HashMap::new(),
+                        });
+                    }
+                }
+            }
+            // Se nenhum campo local tem m3u8, pegar o primeiro que existir
+            for midia in midias {
+                if let Some(url_midia) = midia.get("local").and_then(|v| v.as_str()) {
+                    if !url_midia.is_empty() {
+                        eprintln!("[extractor:unip] mídia encontrada: {}", url_midia);
+                        return Some(ExtractResult {
+                            m3u8_url: url_midia.to_string(),
+                            title,
+                            headers: HashMap::new(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fallback: buscar qualquer URL m3u8 no JSON inteiro
+        if let Some(m3u8) = find_stream_url_in_json(&body) {
+            return Some(ExtractResult {
+                m3u8_url: m3u8,
+                title,
+                headers: HashMap::new(),
+            });
+        }
+    }
+
+    // Fallback final: regex no body
     if let Some(m3u8) = find_stream_url_in_json(&body) {
         return Some(ExtractResult {
             m3u8_url: m3u8,
             title: extract_json_field(&body, "titulo")
-                .or_else(|| extract_json_field(&body, "nome"))
-                .or_else(|| extract_json_field(&body, "title")),
+                .or_else(|| extract_json_field(&body, "nome")),
             headers: HashMap::new(),
         });
     }

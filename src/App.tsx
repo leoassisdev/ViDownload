@@ -4,8 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import UrlInput from "./components/UrlInput";
 import StreamList from "./components/StreamList";
-import TerminalLoader from "./components/TerminalLoader";
-import CubeLoader from "./components/CubeLoader";
+import SpinnerLoader from "./components/SpinnerLoader";
 import PosterWall from "./components/PosterWall";
 import DownloadProgressBar from "./components/DownloadProgress";
 import type { VideoFound, DownloadProgress } from "./types";
@@ -213,15 +212,7 @@ function App() {
         )}
 
         {/* Loading */}
-        {loading && !video && (
-          <div className="flex flex-col items-center justify-center py-16 gap-10">
-            <div className="flex items-center gap-12">
-              <CubeLoader />
-              <div className="ml-8"><TerminalLoader text="Scanning..." /></div>
-            </div>
-            <p className="text-zinc-500 text-sm font-mono mt-4">Analisando streams na URL...</p>
-          </div>
-        )}
+        {loading && !video && <SpinnerLoader />}
 
         {/* Empty state — PosterWall */}
         {showEmptyState && (
