@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 
 use super::crypto;
 use super::extractors;
+use super::ffmpeg;
 use super::m3u8;
 use super::types::*;
 
@@ -114,6 +115,11 @@ pub async fn download_stream(
     active: Arc<ActiveDownload>,
     parallel: usize,
 ) -> Result<PathBuf, String> {
+    // HLS demuxado (áudio/vídeo separados, ex. Vimeo): usar ffmpeg para muxar.
+    if active.stream.audio_url.is_some() {
+        return download_via_ffmpeg(active).await;
+    }
+
     let client = build_client()?;
     let segments = active.stream.segments.clone();
     let total = segments.len() as u64;
@@ -240,6 +246,66 @@ pub async fn download_stream(
 
     *active.state.lock().await = DownloadState::Done;
     Ok(active.output_path.clone())
+}
+
+/// Baixa e muxa via ffmpeg (HLS com áudio/vídeo separados). O progresso é medido
+/// em segundos processados (segments_done = segundos, total = duração).
+async fn download_via_ffmpeg(active: Arc<ActiveDownload>) -> Result<PathBuf, String> {
+    if !ffmpeg::is_available() {
+        let msg = "ffmpeg é necessário para este vídeo (áudio e vídeo separados). \
+                   Instale com: brew install ffmpeg"
+            .to_string();
+        *active.state.lock().await = DownloadState::Error(msg.clone());
+        return Err(msg);
+    }
+
+    *active.state.lock().await = DownloadState::Downloading;
+
+    let output = active.output_path.clone();
+    let video_url = active.stream.url.clone();
+    let audio_url = active.stream.audio_url.clone();
+    let referer = active.stream.download_referer.clone();
+
+    let progress_active = active.clone();
+    let out_for_size = output.clone();
+
+    let result = ffmpeg::download_mux(
+        &video_url,
+        audio_url.as_deref(),
+        referer.as_deref(),
+        &output,
+        &active.cancelled,
+        move |secs| {
+            progress_active
+                .segments_done
+                .store(secs as u64, Ordering::Relaxed);
+            if let Ok(meta) = std::fs::metadata(&out_for_size) {
+                progress_active
+                    .bytes_downloaded
+                    .store(meta.len(), Ordering::Relaxed);
+            }
+        },
+    )
+    .await;
+
+    match result {
+        Ok(()) => {
+            // Tamanho final real
+            if let Ok(meta) = tokio::fs::metadata(&output).await {
+                active.bytes_downloaded.store(meta.len(), Ordering::Relaxed);
+            }
+            *active.state.lock().await = DownloadState::Done;
+            Ok(output)
+        }
+        Err(e) => {
+            if active.cancelled.load(Ordering::Relaxed) {
+                *active.state.lock().await = DownloadState::Cancelled;
+            } else {
+                *active.state.lock().await = DownloadState::Error(e.clone());
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Baixa um segmento com retry e backoff exponencial, decriptando se necessário
@@ -459,6 +525,7 @@ async fn analyze_m3u8(
             total_duration: result.total_duration,
             target_duration: result.target_duration,
             media_sequence: result.media_sequence,
+            ..Default::default()
         };
 
         Ok(VideoFound {
@@ -508,6 +575,7 @@ async fn analyze_html_page(
                             total_duration: result.total_duration,
                             target_duration: result.target_duration,
                             media_sequence: result.media_sequence,
+                            ..Default::default()
                         });
                     }
                 }

@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use std::collections::HashMap;
 
 /// Resultado de um extractor
@@ -13,7 +12,123 @@ pub async fn try_extract(url: &str) -> Option<ExtractResult> {
     if url.contains("sistemas.unip.br") || url.contains("unip.br/ava") {
         return extract_unip(url).await;
     }
+    // URL direta de player Vimeo (player.vimeo.com/video/{id})
+    if let Some(id) = vimeo_id_from_url(url) {
+        return extract_vimeo(&id, None).await;
+    }
     // Adicionar mais sites aqui conforme necessário
+    None
+}
+
+/// Extrai o ID numérico de uma URL de player do Vimeo.
+pub fn vimeo_id_from_url(url: &str) -> Option<String> {
+    let re = regex_lite::Regex::new(r"(?:player\.)?vimeo\.com/(?:video/)?(\d+)").ok()?;
+    re.captures(url)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Extractor Vimeo — busca o HTML do player com o Referer do site que embeda
+/// (necessário para vídeos com privacidade por domínio, ex. MemberKit) e lê o
+/// config inline, que contém o master.m3u8 assinado. Não requer DRM/token extra.
+pub async fn extract_vimeo(video_id: &str, referer: Option<&str>) -> Option<ExtractResult> {
+    let player_url = format!("https://player.vimeo.com/video/{}", video_id);
+
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .build()
+        .ok()?;
+
+    let mut req = client.get(&player_url);
+    if let Some(r) = referer {
+        req = req.header("Referer", r);
+    }
+
+    eprintln!("[extractor:vimeo] GET {} (referer={:?})", player_url, referer);
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        eprintln!("[extractor:vimeo] player retornou {}", resp.status());
+        return None;
+    }
+    let html = resp.text().await.ok()?;
+
+    let config = extract_inline_config(&html)?;
+    let json: serde_json::Value = serde_json::from_str(&config).ok()?;
+
+    // DRM: se marcado, não conseguimos baixar
+    if json.pointer("/request/drm").map(|v| !v.is_null()).unwrap_or(false) {
+        eprintln!("[extractor:vimeo] vídeo protegido por DRM — não suportado");
+        return None;
+    }
+
+    let files = json.pointer("/request/files")?;
+    let hls = files.get("hls")?;
+    let default_cdn = hls.get("default_cdn").and_then(|v| v.as_str());
+    let cdns = hls.get("cdns")?.as_object()?;
+
+    // Pegar a URL do CDN default; senão a primeira disponível
+    let m3u8_url = default_cdn
+        .and_then(|c| cdns.get(c))
+        .or_else(|| cdns.values().next())
+        .and_then(|c| c.get("url"))
+        .and_then(|v| v.as_str())?
+        .to_string();
+
+    let title = json
+        .pointer("/video/title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    eprintln!("[extractor:vimeo] master m3u8 OK ({} chars)", m3u8_url.len());
+
+    let mut headers = HashMap::new();
+    if let Some(r) = referer {
+        headers.insert("referer".to_string(), r.to_string());
+    }
+
+    Some(ExtractResult {
+        m3u8_url,
+        title,
+        headers,
+    })
+}
+
+/// Extrai o objeto JSON de `window.playerConfig = {...}` (ou `var config = {...}`)
+/// do HTML do player Vimeo, casando as chaves `{}` respeitando strings.
+fn extract_inline_config(html: &str) -> Option<String> {
+    let re = regex_lite::Regex::new(r"(?:window\.playerConfig|var\s+config)\s*=\s*\{").ok()?;
+    let m = re.find(html)?;
+    let start = m.end() - 1; // posição do '{'
+    let bytes = html.as_bytes();
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut i = start;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else {
+            match c {
+                '"' => in_str = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(html[start..=i].to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
     None
 }
 

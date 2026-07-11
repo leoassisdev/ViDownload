@@ -11,6 +11,16 @@ export interface StreamInfo {
   total_duration: number;
   target_duration: number;
   media_sequence: number;
+  /** Playlist de áudio separada (HLS demuxado, ex. Vimeo); baixa via ffmpeg. */
+  audio_url?: string | null;
+  /** Referer para as requisições de mídia, quando o CDN exige. */
+  download_referer?: string | null;
+}
+
+export interface SiteCredential {
+  host: string;
+  email: string;
+  password: string;
 }
 
 export interface Segment {

@@ -1,8 +1,9 @@
 mod browser;
 mod callback_server;
-mod chrome;
+pub mod chrome;
 mod commands;
-mod engine;
+pub mod config;
+pub mod engine;
 
 use browser::BrowserState;
 use browser::{
@@ -11,9 +12,9 @@ use browser::{
 };
 use chrome::chrome_find_streams;
 use commands::{
-    analyze_url, cancel_download, clear_detected_streams, get_detected_streams,
-    get_download_progress, pause_download, report_detected_stream, resume_download,
-    start_download,
+    analyze_url, cancel_download, check_ffmpeg, clear_detected_streams, get_detected_streams,
+    get_download_progress, list_site_credentials, pause_download, remove_site_credentials,
+    report_detected_stream, resume_download, save_site_credentials, start_download,
 };
 use engine::sniffer;
 use std::sync::Arc;
@@ -56,6 +57,10 @@ pub fn run() {
             clear_detected_streams,
             report_detected_stream,
             chrome_find_streams,
+            check_ffmpeg,
+            list_site_credentials,
+            save_site_credentials,
+            remove_site_credentials,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

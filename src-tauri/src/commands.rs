@@ -1,11 +1,21 @@
+use crate::config::{self, SiteCredential};
 use crate::engine::downloader::{self, ActiveDownload, SharedManager};
+use crate::engine::extractors;
+use crate::engine::ffmpeg;
 use crate::engine::sniffer::{DetectedStream, SnifferState};
 use crate::engine::types::*;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
+
+/// Diretório de config do app (credenciais, perfil do Chrome).
+fn app_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map_err(|e| format!("Erro ao resolver dir de config: {}", e))
+}
 
 #[tauri::command]
 pub async fn analyze_url(
@@ -14,6 +24,24 @@ pub async fn analyze_url(
     url: String,
 ) -> Result<VideoFound, String> {
     sniffer.clear();
+
+    // Áreas de membros (MemberKit): exigem login e servem o vídeo por um player
+    // externo embutido (Vimeo). Fazemos login no Chrome, achamos o iframe do
+    // player e extraímos o stream direto.
+    if url.contains("memberkit.com.br") {
+        let video = analyze_memberkit(&app, &url).await?;
+        for stream in &video.streams {
+            sniffer.register(DetectedStream {
+                url: stream.url.clone(),
+                content_type: Some("application/x-mpegurl".to_string()),
+                source: "memberkit".to_string(),
+                headers: std::collections::HashMap::new(),
+                timestamp: 0,
+            });
+        }
+        let _ = app.emit("stream-detected", video.streams.len());
+        return Ok(video);
+    }
 
     let result = downloader::analyze(&url).await;
 
@@ -31,6 +59,87 @@ pub async fn analyze_url(
     }
 
     result
+}
+
+/// Fluxo MemberKit → Vimeo: Chrome logado lê o iframe do player, extrai o config
+/// do Vimeo (com Referer da aula) e analisa o master m3u8 (áudio+vídeo separados).
+async fn analyze_memberkit(app: &AppHandle, url: &str) -> Result<VideoFound, String> {
+    let cfg = app_config_dir(app)?;
+    let host = config::host_of(url).unwrap_or_default();
+    let (email, password) = config::find_for_host(&cfg, &host)
+        .map(|c| (c.email, c.password))
+        .unzip();
+
+    let profile = cfg.join("chrome-profile");
+    let frames =
+        crate::chrome::extract_iframes(&profile, url, email.as_deref(), password.as_deref())
+            .await?;
+
+    let video_id = frames
+        .iter()
+        .find_map(|f| extractors::vimeo_id_from_url(f))
+        .ok_or_else(|| {
+            "Nenhum vídeo Vimeo encontrado nesta aula. (Ela usa outro player?)".to_string()
+        })?;
+
+    let extracted = extractors::extract_vimeo(&video_id, Some(url))
+        .await
+        .ok_or_else(|| {
+            "Não foi possível extrair o stream do Vimeo (pode estar protegido por DRM)."
+                .to_string()
+        })?;
+
+    let mut video = downloader::analyze(&extracted.m3u8_url).await?;
+    if let Some(title) = extracted.title {
+        video.title = Some(title);
+    }
+    video.page_url = url.to_string();
+    Ok(video)
+}
+
+#[tauri::command]
+pub fn check_ffmpeg() -> bool {
+    ffmpeg::is_available()
+}
+
+#[tauri::command]
+pub fn list_site_credentials(app: AppHandle) -> Result<Vec<SiteCredential>, String> {
+    let cfg = app_config_dir(&app)?;
+    // Não expor a senha ao frontend; devolver mascarada.
+    let list = config::load_all(&cfg)
+        .into_iter()
+        .map(|mut c| {
+            if !c.password.is_empty() {
+                c.password = "••••••••".to_string();
+            }
+            c
+        })
+        .collect();
+    Ok(list)
+}
+
+#[tauri::command]
+pub fn save_site_credentials(
+    app: AppHandle,
+    host: String,
+    email: String,
+    password: String,
+) -> Result<(), String> {
+    let cfg = app_config_dir(&app)?;
+    config::upsert(
+        &cfg,
+        SiteCredential {
+            host,
+            email,
+            password,
+        },
+    )
+}
+
+#[tauri::command]
+pub fn remove_site_credentials(app: AppHandle, host: String) -> Result<(), String> {
+    let cfg = app_config_dir(&app)?;
+    config::remove(&cfg, &host)
 }
 
 #[tauri::command]
@@ -139,7 +248,13 @@ pub async fn get_download_progress(
     let downloads = manager.downloads.lock().await;
     if let Some(active) = downloads.get(&video_id) {
         let done = active.segments_done.load(Ordering::Relaxed);
-        let total = active.stream.segments.len() as u64;
+        // Streams demuxados (ffmpeg) medem progresso em segundos; o denominador
+        // é a duração total. Os demais medem em número de segmentos.
+        let total = if active.stream.audio_url.is_some() {
+            active.stream.total_duration.ceil() as u64
+        } else {
+            active.stream.segments.len() as u64
+        };
         let bytes = active.bytes_downloaded.load(Ordering::Relaxed);
         let state = active.state.lock().await.clone();
         let elapsed = active.started_at.elapsed().as_secs_f64();

@@ -106,7 +106,20 @@ async fn wait_for_cdp(port: u16, max_retries: u32) -> Result<String, String> {
         if let Ok(resp) = reqwest::get(&url).await {
             if let Ok(text) = resp.text().await {
                 if let Ok(tabs) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+                    // Preferir um target do tipo "page" (a aba real), ignorando
+                    // background de extensões / service workers.
+                    let page_ws = tabs
+                        .iter()
+                        .find(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
+                        .and_then(|t| t.get("webSocketDebuggerUrl").and_then(|v| v.as_str()));
+                    if let Some(ws) = page_ws {
+                        return Ok(ws.to_string());
+                    }
+                    // Fallback: qualquer target com webSocketDebuggerUrl
                     for tab in &tabs {
+                        if tab.get("type").and_then(|v| v.as_str()) == Some("page") {
+                            continue;
+                        }
                         if let Some(ws) = tab.get("webSocketDebuggerUrl").and_then(|v| v.as_str()) {
                             return Ok(ws.to_string());
                         }
@@ -314,6 +327,264 @@ async fn run_cdp_session(
     } else {
         Ok(detected)
     }
+}
+
+// ============================================================================
+// Extração de iframes com auto-login (para áreas de membros, ex. MemberKit)
+// ============================================================================
+
+type Ws = tokio_tungstenite::WebSocketStream<
+    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+>;
+
+/// Envia um comando CDP e aguarda a resposta com o mesmo id, ignorando eventos.
+async fn cdp_cmd(
+    ws: &mut Ws,
+    cdp: &CdpConn,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let (id, msg) = cdp.make_msg(method, params);
+    ws.send(Message::Text(msg.into()))
+        .await
+        .map_err(|e| e.to_string())?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await {
+            Ok(Some(Ok(Message::Text(t)))) => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t.to_string()) {
+                    if v.get("id").and_then(|x| x.as_u64()) == Some(id) {
+                        if let Some(err) = v.get("error") {
+                            return Err(err.to_string());
+                        }
+                        return Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null));
+                    }
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(e))) => return Err(e.to_string()),
+            Ok(None) => return Err("WebSocket CDP fechado".to_string()),
+            Err(_) => {}
+        }
+    }
+    Err(format!("Timeout no comando CDP {}", method))
+}
+
+/// Avalia JS na página e retorna o valor (returnByValue).
+async fn cdp_eval(ws: &mut Ws, cdp: &CdpConn, expr: &str) -> Result<serde_json::Value, String> {
+    let r = cdp_cmd(
+        ws,
+        cdp,
+        "Runtime.evaluate",
+        serde_json::json!({
+            "expression": expr,
+            "returnByValue": true,
+            "userGesture": true,
+            "awaitPromise": true
+        }),
+    )
+    .await?;
+    Ok(r.pointer("/result/value").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+/// Abre uma página num Chrome com perfil persistente (mantém login entre sessões),
+/// faz auto-login quando há formulário e credenciais, e retorna os `src` dos iframes.
+pub async fn extract_iframes(
+    profile_dir: &std::path::Path,
+    url: &str,
+    email: Option<&str>,
+    password: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let chrome_path =
+        find_chrome().ok_or_else(|| "Chrome não encontrado no sistema.".to_string())?;
+    let port = pick_debug_port();
+    let _ = std::fs::create_dir_all(profile_dir);
+
+    let mut child = Command::new(&chrome_path)
+        .args([
+            "--headless=new",
+            "--disable-gpu",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            &format!("--remote-debugging-port={}", port),
+            &format!("--user-data-dir={}", profile_dir.display()),
+            "--window-size=1280,900",
+            "about:blank",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Erro ao iniciar Chrome: {}", e))?;
+
+    let result = extract_iframes_inner(port, url, email, password).await;
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    // NÃO remover o profile_dir: é persistente para manter o login.
+
+    result
+}
+
+/// Estado observado da página: se há campo de senha e os src dos iframes.
+struct PageProbe {
+    ready: bool,
+    has_password: bool,
+    frames: Vec<String>,
+    url: String,
+    title: String,
+}
+
+/// Lê o estado atual da página numa única avaliação.
+async fn probe_page(ws: &mut Ws, cdp: &CdpConn) -> PageProbe {
+    let expr = r#"JSON.stringify({
+        ready: document.readyState === 'complete',
+        pass: !!document.querySelector('input[type=password]'),
+        url: location.href,
+        title: document.title,
+        frames: Array.from(document.querySelectorAll('iframe')).map(function(f){return f.src;}).filter(Boolean)
+    })"#;
+    let v = cdp_eval(ws, cdp, expr).await.unwrap_or(serde_json::Value::Null);
+    let parsed = v
+        .as_str()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    PageProbe {
+        ready: parsed.get("ready").and_then(|x| x.as_bool()).unwrap_or(false),
+        has_password: parsed.get("pass").and_then(|x| x.as_bool()).unwrap_or(false),
+        url: parsed.get("url").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        title: parsed.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        frames: parsed
+            .get("frames")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+    }
+}
+
+/// Aguarda a página assentar: retorna assim que houver iframe ou campo de senha,
+/// ou quando o carregamento completa, ou no timeout.
+async fn wait_page_settle(ws: &mut Ws, cdp: &CdpConn, max_secs: u64) -> PageProbe {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(max_secs);
+    let mut last = PageProbe {
+        ready: false,
+        has_password: false,
+        frames: Vec::new(),
+        url: String::new(),
+        title: String::new(),
+    };
+    while tokio::time::Instant::now() < deadline {
+        last = probe_page(ws, cdp).await;
+        if !last.frames.is_empty() || last.has_password {
+            // Se achou iframe, dar um instante para carregarem os demais
+            if !last.frames.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+                last = probe_page(ws, cdp).await;
+            }
+            return last;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    }
+    last
+}
+
+async fn extract_iframes_inner(
+    port: u16,
+    url: &str,
+    email: Option<&str>,
+    password: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let ws_url = wait_for_cdp(port, 20)
+        .await
+        .map_err(|e| format!("Chrome CDP não respondeu: {}", e))?;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .map_err(|e| format!("Erro ao conectar CDP: {}", e))?;
+
+    let cdp = CdpConn::new();
+    let _ = cdp_cmd(&mut ws, &cdp, "Page.enable", serde_json::json!({})).await;
+    let _ = cdp_cmd(&mut ws, &cdp, "Runtime.enable", serde_json::json!({})).await;
+
+    // Navegar para a página alvo e aguardar assentar
+    cdp_cmd(&mut ws, &cdp, "Page.navigate", serde_json::json!({ "url": url })).await?;
+    let mut state = wait_page_settle(&mut ws, &cdp, 20).await;
+    eprintln!(
+        "[chrome] estado inicial: ready={} pass={} frames={} url={} title={}",
+        state.ready,
+        state.has_password,
+        state.frames.len(),
+        state.url,
+        state.title
+    );
+
+    // Se caiu na tela de login, tentar auto-login
+    if state.has_password && state.frames.is_empty() {
+        match (email, password) {
+            (Some(e), Some(p)) if !e.is_empty() && !p.is_empty() => {
+                eprintln!("[chrome] Login detectado — preenchendo credenciais");
+                let fill = format!(
+                    r#"(function(){{
+                        var eF=document.querySelector('input[type=email], input[name*=email i], input[name=login], input[name=user], input[type=text]');
+                        var pF=document.querySelector('input[type=password]');
+                        if(eF){{eF.value="{}";eF.dispatchEvent(new Event('input',{{bubbles:true}}));eF.dispatchEvent(new Event('change',{{bubbles:true}}));}}
+                        if(pF){{pF.value="{}";pF.dispatchEvent(new Event('input',{{bubbles:true}}));pF.dispatchEvent(new Event('change',{{bubbles:true}}));}}
+                        return !!(eF&&pF);
+                    }})()"#,
+                    json_escape(e),
+                    json_escape(p)
+                );
+                let _ = cdp_eval(&mut ws, &cdp, &fill).await;
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                let submit = r#"(function(){
+                    var btn=document.querySelector('button[type=submit], input[type=submit]');
+                    var form=document.querySelector('form');
+                    if(btn){btn.click();return 'btn';}
+                    if(form){form.submit();return 'form';}
+                    return 'none';
+                })()"#;
+                let _ = cdp_eval(&mut ws, &cdp, submit).await;
+                // Aguardar o POST de login processar/redirecionar
+                tokio::time::sleep(std::time::Duration::from_millis(3500)).await;
+
+                // Ir para a página alvo novamente e aguardar o player
+                cdp_cmd(&mut ws, &cdp, "Page.navigate", serde_json::json!({ "url": url })).await?;
+                state = wait_page_settle(&mut ws, &cdp, 20).await;
+                eprintln!(
+                    "[chrome] pós-login: ready={} pass={} frames={}",
+                    state.ready,
+                    state.has_password,
+                    state.frames.len()
+                );
+
+                if state.has_password && state.frames.is_empty() {
+                    return Err(
+                        "Login falhou (credenciais inválidas ou captcha). Verifique email/senha nas configurações."
+                            .to_string(),
+                    );
+                }
+            }
+            _ => {
+                return Err(
+                    "Esta página exige login. Cadastre email e senha do site nas configurações."
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    eprintln!("[chrome] {} iframe(s) encontrados", state.frames.len());
+    Ok(state.frames)
+}
+
+/// Escapa uma string para embutir com segurança dentro de aspas duplas em JS.
+fn json_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 /// Verifica se uma URL/content-type corresponde a um stream HLS/DASH.

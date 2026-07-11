@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamInfo {
     pub url: String,
     pub quality: String,
@@ -15,6 +15,13 @@ pub struct StreamInfo {
     pub total_duration: f64,
     pub target_duration: f64,
     pub media_sequence: u64,
+    /// URL da playlist de áudio separada (HLS demuxado, ex. Vimeo). Quando presente,
+    /// o download usa ffmpeg para muxar vídeo+áudio.
+    #[serde(default)]
+    pub audio_url: Option<String>,
+    /// Referer a enviar nas requisições de mídia (quando o CDN exige).
+    #[serde(default)]
+    pub download_referer: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -13,12 +13,44 @@ pub struct MediaPlaylistResult {
     pub media_sequence: u64,
 }
 
-/// Parse de master playlist: retorna as qualidades disponíveis
+/// Parse de master playlist: retorna as qualidades disponíveis.
+/// Também resolve faixas de áudio separadas (#EXT-X-MEDIA:TYPE=AUDIO) e as
+/// anexa a cada variante de vídeo (HLS demuxado, comum no Vimeo).
 pub fn parse_master_playlist(content: &str, base_url: &str) -> Vec<StreamInfo> {
     let mut streams = Vec::new();
     let lines: Vec<&str> = content.lines().collect();
-    let mut i = 0;
 
+    // 1. Mapear grupos de áudio: GROUP-ID -> URL da playlist de áudio (default primeiro)
+    let mut audio_groups: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for line in &lines {
+        let line = line.trim();
+        if line.starts_with("#EXT-X-MEDIA:") {
+            let attrs = &line["#EXT-X-MEDIA:".len()..];
+            let media_type = extract_attr(attrs, "TYPE").unwrap_or_default();
+            if media_type != "AUDIO" {
+                continue;
+            }
+            let group = match extract_attr(attrs, "GROUP-ID") {
+                Some(g) => g,
+                None => continue,
+            };
+            let uri = match extract_attr(attrs, "URI") {
+                Some(u) => resolve_url(base_url, &u),
+                None => continue, // áudio embutido no vídeo, sem faixa separada
+            };
+            let is_default = extract_attr(attrs, "DEFAULT")
+                .map(|v| v.eq_ignore_ascii_case("YES"))
+                .unwrap_or(false);
+            // Preferir a faixa marcada DEFAULT; senão a primeira vista
+            if is_default || !audio_groups.contains_key(&group) {
+                audio_groups.insert(group, uri);
+            }
+        }
+    }
+
+    // 2. Parsear as variantes de vídeo
+    let mut i = 0;
     while i < lines.len() {
         let line = lines[i].trim();
 
@@ -29,6 +61,8 @@ pub fn parse_master_playlist(content: &str, base_url: &str) -> Vec<StreamInfo> {
                 .unwrap_or(0);
             let resolution = extract_attr(attrs, "RESOLUTION");
             let codecs = extract_attr(attrs, "CODECS");
+            let audio_group = extract_attr(attrs, "AUDIO");
+            let audio_url = audio_group.and_then(|g| audio_groups.get(&g).cloned());
 
             let quality = resolution
                 .as_deref()
@@ -51,13 +85,8 @@ pub fn parse_master_playlist(content: &str, base_url: &str) -> Vec<StreamInfo> {
                     bandwidth,
                     resolution,
                     codecs,
-                    segments: Vec::new(),
-                    is_encrypted: false,
-                    is_live: false,
-                    init_segment_url: None,
-                    total_duration: 0.0,
-                    target_duration: 0.0,
-                    media_sequence: 0,
+                    audio_url,
+                    ..Default::default()
                 });
             }
         }
