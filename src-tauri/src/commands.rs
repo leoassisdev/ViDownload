@@ -43,6 +43,25 @@ pub async fn analyze_url(
         return Ok(video);
     }
 
+    // Hotmart Club: área de membros com player próprio (cf-embed.play.hotmart.com).
+    // O m3u8 é assinado e buscado por JS dentro do iframe do player, exigindo login
+    // e Referer do embed. Abrimos um Chrome logado, farejamos o .m3u8 e o analisamos
+    // carregando o Referer necessário para baixar segmentos/chaves.
+    if url.contains("hotmart.com") {
+        let video = analyze_hotmart(&app, &url).await?;
+        for stream in &video.streams {
+            sniffer.register(DetectedStream {
+                url: stream.url.clone(),
+                content_type: Some("application/x-mpegurl".to_string()),
+                source: "hotmart".to_string(),
+                headers: std::collections::HashMap::new(),
+                timestamp: 0,
+            });
+        }
+        let _ = app.emit("stream-detected", video.streams.len());
+        return Ok(video);
+    }
+
     let result = downloader::analyze(&url).await;
 
     if let Ok(ref video) = result {
@@ -92,6 +111,35 @@ async fn analyze_memberkit(app: &AppHandle, url: &str) -> Result<VideoFound, Str
     let mut video = downloader::analyze(&extracted.m3u8_url).await?;
     if let Some(title) = extracted.title {
         video.title = Some(title);
+    }
+    video.page_url = url.to_string();
+    Ok(video)
+}
+
+/// Fluxo Hotmart: Chrome logado (perfil persistente) fareja o master m3u8 assinado
+/// e o Referer do player; então analisamos o stream carregando esse Referer para
+/// que segmentos e chaves AES sejam aceitos pelo CDN.
+async fn analyze_hotmart(app: &AppHandle, url: &str) -> Result<VideoFound, String> {
+    let cfg = app_config_dir(app)?;
+    // Credenciais salvas para "hotmart.com" (ou o host da URL, se diferente).
+    let host = config::host_of(url).unwrap_or_else(|| "hotmart.com".to_string());
+    let (email, password) = config::find_for_host(&cfg, &host)
+        .or_else(|| config::find_for_host(&cfg, "hotmart.com"))
+        .map(|c| (c.email, c.password))
+        .unzip();
+
+    let profile = cfg.join("chrome-profile");
+    let hit = crate::chrome::sniff_hls_authenticated(
+        &profile,
+        url,
+        email.as_deref(),
+        password.as_deref(),
+    )
+    .await?;
+
+    let mut video = downloader::analyze_with_referer(&hit.m3u8_url, hit.referer.as_deref()).await?;
+    if video.title.is_none() {
+        video.title = hit.title;
     }
     video.page_url = url.to_string();
     Ok(video)

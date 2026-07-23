@@ -8,6 +8,9 @@ dist-ssr
 # Rust
 src-tauri/target
 
+# Config local do cargo (redireciona target/ p/ disco interno — caminho da máquina)
+src-tauri/.cargo/config.toml
+
 # Environment
 *.local
 .env
@@ -17,6 +20,16 @@ src-tauri/target
 .DS_Store
 Thumbs.db
 
+# Lixo do exFAT (AppleDouble do macOS)
+._*
+**/._*
+
+# Testes locais com credenciais hardcoded (NUNCA subir — usam login do Potenza)
+src-tauri/tests/memberkit_course.rs
+src-tauri/tests/memberkit_probe.rs
+src-tauri/tests/memberkit_player_probe.rs
+src-tauri/tests/course_smoke.rs
+
 # Editor
 .vscode
 .idea
@@ -24,6 +37,10 @@ Thumbs.db
 
 # Plano interno
 PLANO.md
+
+# Cofre de credenciais (NUNCA subir pro GitHub)
+.cofre
+.cofre/
 
 # Logs
 *.log

@@ -10,7 +10,7 @@ interface Props {
 
 export default function SettingsModal({ open, onClose, ffmpegOk }: Props) {
   const [creds, setCreds] = useState<SiteCredential[]>([]);
-  const [host, setHost] = useState("potenza.memberkit.com.br");
+  const [host, setHost] = useState("hotmart.com");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);

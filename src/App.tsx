@@ -8,7 +8,9 @@ import SpinnerLoader from "./components/SpinnerLoader";
 import PosterWall from "./components/PosterWall";
 import DownloadProgressBar from "./components/DownloadProgress";
 import SettingsModal from "./components/SettingsModal";
-import type { VideoFound, DownloadProgress } from "./types";
+import CourseModal from "./components/CourseModal";
+import CourseProgress from "./components/CourseProgress";
+import type { VideoFound, DownloadProgress, CourseTree, CourseLessonUI, CourseProgressEvt } from "./types";
 
 interface DownloadItem {
   videoId: string;
@@ -26,6 +28,16 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [ffmpegOk, setFfmpegOk] = useState(true);
   const pollIntervals = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+
+  // Curso (esteira de aulas)
+  const [courseLink, setCourseLink] = useState<string | null>(null);
+  const [course, setCourse] = useState<CourseTree | null>(null);
+  const [mappingCourse, setMappingCourse] = useState(false);
+  const [showCourseModal, setShowCourseModal] = useState(false);
+  const [courseStatuses, setCourseStatuses] = useState<Map<string, string>>(new Map());
+  const [courseTotals, setCourseTotals] = useState<{ done: number; total: number }>({ done: 0, total: 0 });
+  const [courseRunning, setCourseRunning] = useState(false);
+  const [courseFinished, setCourseFinished] = useState(false);
 
   // Limpar intervals ao desmontar
   useEffect(() => {
@@ -65,17 +77,87 @@ function App() {
     };
   }, []);
 
+  // Eventos do download de curso
+  useEffect(() => {
+    const unP = listen<CourseProgressEvt>("course-progress", (e) => {
+      const { key, status, done, total } = e.payload;
+      setCourseStatuses((prev) => new Map(prev).set(key, status));
+      setCourseTotals({ done, total });
+    });
+    const unD = listen<{ ok: number; fail: number; total: number }>("course-done", (e) => {
+      setCourseTotals({ done: e.payload.ok + e.payload.fail, total: e.payload.total });
+      setCourseFinished(true);
+      setCourseRunning(false);
+    });
+    return () => {
+      unP.then((fn) => fn());
+      unD.then((fn) => fn());
+    };
+  }, []);
+
+  const handleOpenCourse = async (url: string) => {
+    setMappingCourse(true);
+    setError(null);
+    try {
+      const tree = await invoke<CourseTree>("list_course_tree", { url });
+      if (!tree.lessons || tree.lessons.length === 0) {
+        setError("Não encontrei aulas neste curso.");
+        return;
+      }
+      setCourse(tree);
+      setShowCourseModal(true);
+    } catch (err) {
+      setError(typeof err === "string" ? err : "Erro ao mapear o curso");
+    } finally {
+      setMappingCourse(false);
+    }
+  };
+
+  const handleDownloadCourse = async (lessons: CourseLessonUI[], outputDir: string, includePdfs: boolean) => {
+    if (!course) return;
+    setShowCourseModal(false);
+    setCourseStatuses(new Map());
+    setCourseTotals({ done: 0, total: lessons.length });
+    setCourseFinished(false);
+    setCourseRunning(true);
+    try {
+      await invoke("download_course", {
+        platform: course.platform,
+        lessons,
+        outputDir,
+        includePdfs,
+        parallel: 5,
+      });
+    } catch (err) {
+      setError(typeof err === "string" ? err : "Erro ao iniciar o curso");
+      setCourseRunning(false);
+    }
+  };
+
+  const handleCancelCourse = async () => {
+    await invoke("cancel_course").catch(() => {});
+  };
+
   const handleAnalyze = async (url: string) => {
     setLoading(true);
     setError(null);
     setVideo(null);
     setSelectedStreams(new Set());
+    // É link de curso (MemberKit/Hotmart)? Habilita o botão "Baixar curso".
+    setCourseLink(/hotmart\.com|memberkit\.com\.br/i.test(url) ? url : null);
 
     try {
       const result = await invoke<VideoFound>("analyze_url", { url });
       setVideo(result);
       setSelectedStreams(new Set([result.best_quality_index]));
-    } catch {
+    } catch (directErr) {
+      // Áreas de membros (Hotmart/MemberKit) já usam Chrome logado dentro do
+      // analyze_url; o fallback headless (sem login) não ajudaria e só trocaria
+      // a mensagem útil por uma genérica. Então mostramos o erro original.
+      if (/hotmart\.com|memberkit\.com\.br/i.test(url)) {
+        setError(typeof directErr === "string" ? directErr : JSON.stringify(directErr));
+        return;
+      }
       // Análise direta falhou — Chrome headless via CDP
       try {
         setError(null);
@@ -230,6 +312,54 @@ function App() {
           </div>
         )}
 
+        {/* Banner: link faz parte de um curso */}
+        {courseLink && !courseRunning && !courseFinished && (
+          <div className="max-w-5xl mx-auto px-6 pt-4">
+            <div className="p-4 bg-blue-950/30 border border-blue-900/40 rounded-lg flex items-center gap-3">
+              <span className="text-2xl">📚</span>
+              <div className="flex-1">
+                <p className="text-sm text-white font-medium">Este link faz parte de um curso</p>
+                <p className="text-xs text-zinc-400">Baixe o curso inteiro ou escolha as aulas (com módulos, títulos e materiais).</p>
+              </div>
+              <button
+                onClick={() => handleOpenCourse(courseLink)}
+                disabled={mappingCourse}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-blue-600 to-red-600 text-white hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+              >
+                {mappingCourse ? (
+                  <>
+                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Mapeando curso…
+                  </>
+                ) : (
+                  "Baixar curso"
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Progresso do curso */}
+        {course && (courseRunning || courseFinished) && (
+          <CourseProgress
+            tree={course}
+            statuses={courseStatuses}
+            done={courseTotals.done}
+            total={courseTotals.total}
+            finished={courseFinished}
+            onCancel={handleCancelCourse}
+            onClose={() => {
+              setCourseRunning(false);
+              setCourseFinished(false);
+              setCourse(null);
+              setCourseStatuses(new Map());
+            }}
+          />
+        )}
+
         {/* Loading */}
         {loading && !video && <SpinnerLoader />}
 
@@ -297,6 +427,14 @@ function App() {
       </main>
 
       <SettingsModal open={showSettings} onClose={() => setShowSettings(false)} ffmpegOk={ffmpegOk} />
+      {course && (
+        <CourseModal
+          open={showCourseModal}
+          tree={course}
+          onClose={() => setShowCourseModal(false)}
+          onDownload={handleDownloadCourse}
+        />
+      )}
     </div>
   );
 }

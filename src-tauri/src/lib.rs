@@ -3,6 +3,7 @@ mod callback_server;
 pub mod chrome;
 mod commands;
 pub mod config;
+pub mod course;
 pub mod engine;
 
 use browser::BrowserState;
@@ -16,6 +17,7 @@ use commands::{
     get_download_progress, list_site_credentials, pause_download, remove_site_credentials,
     report_detected_stream, resume_download, save_site_credentials, start_download,
 };
+use course::{cancel_course, download_course, list_course_tree, CourseState};
 use engine::sniffer;
 use std::sync::Arc;
 
@@ -30,6 +32,7 @@ pub fn run() {
         .manage(BrowserState::default())
         .manage(sniffer_state.clone())
         .manage(download_manager)
+        .manage(CourseState::default())
         .setup(move |app| {
             let handle = app.handle().clone();
             let sniffer = sniffer_state.clone();
@@ -61,6 +64,9 @@ pub fn run() {
             list_site_credentials,
             save_site_credentials,
             remove_site_credentials,
+            list_course_tree,
+            download_course,
+            cancel_course,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -110,6 +110,42 @@ pub async fn analyze(url: &str) -> Result<VideoFound, String> {
     Err("Nenhum stream HLS encontrado nesta URL".to_string())
 }
 
+/// Analisa uma URL de m3u8 já assinada, enviando um `Referer` fixo (exigido por
+/// CDNs como o do Hotmart) e carimbando esse Referer em todos os streams para o
+/// download reusar. Usado quando o stream foi capturado via browser logado.
+pub async fn analyze_with_referer(
+    url: &str,
+    referer: Option<&str>,
+) -> Result<VideoFound, String> {
+    let client = build_client_with_referer(referer)?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Erro ao acessar stream: {}", e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Erro ao ler stream: {}", e))?;
+
+    if !m3u8::is_m3u8(&body) {
+        return Err(
+            "O link capturado não retornou um m3u8 válido (sessão expirada ou link assinado vencido)."
+                .to_string(),
+        );
+    }
+
+    let mut result = analyze_m3u8(&client, url, &body).await?;
+    if let Some(r) = referer.filter(|r| !r.is_empty()) {
+        for stream in &mut result.streams {
+            stream.download_referer = Some(r.to_string());
+        }
+    }
+    result.page_url = url.to_string();
+    Ok(result)
+}
+
 /// Baixa todos os segmentos de um stream em paralelo
 pub async fn download_stream(
     active: Arc<ActiveDownload>,
@@ -120,7 +156,7 @@ pub async fn download_stream(
         return download_via_ffmpeg(active).await;
     }
 
-    let client = build_client()?;
+    let client = build_client_with_referer(active.stream.download_referer.as_deref())?;
     let segments = active.stream.segments.clone();
     let total = segments.len() as u64;
 
@@ -654,10 +690,28 @@ fn html_escape_decode(s: &str) -> String {
 }
 
 fn build_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    build_client_with_referer(None)
+}
+
+/// Cliente HTTP com um `Referer` fixo em todos os requests. Alguns CDNs (ex.
+/// Hotmart) só entregam o m3u8/segmentos/chave quando o Referer bate com o
+/// domínio do player embutido. Colocando como header padrão, master, playlists
+/// de mídia, segmentos e chaves AES herdam o Referer sem plumbing extra.
+fn build_client_with_referer(referer: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .redirect(reqwest::redirect::Policy::limited(10))
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(30));
+
+    if let Some(r) = referer.filter(|r| !r.is_empty()) {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(r) {
+            headers.insert(reqwest::header::REFERER, value);
+            builder = builder.default_headers(headers);
+        }
+    }
+
+    builder
         .build()
         .map_err(|e| format!("Erro ao criar cliente HTTP: {}", e))
 }

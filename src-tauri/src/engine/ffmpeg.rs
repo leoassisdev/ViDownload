@@ -68,21 +68,28 @@ pub async fn download_mux<F: Fn(f64)>(
     ];
 
     let header_arg = referer.map(|r| format!("Referer: {}\r\n", r));
+    // Alguns CDNs (Hotmart) só entregam para um User-Agent de navegador; o UA
+    // padrão do ffmpeg ("Lavf/...") toma 403. Enviamos o mesmo do reqwest.
+    const BROWSER_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+    // Opções de rede aplicadas a cada input (propagadas aos segmentos HLS).
+    let input_opts = |args: &mut Vec<String>| {
+        args.push("-user_agent".into());
+        args.push(BROWSER_UA.into());
+        if let Some(ref h) = header_arg {
+            args.push("-headers".into());
+            args.push(h.clone());
+        }
+    };
 
     // Input 0: vídeo
-    if let Some(ref h) = header_arg {
-        args.push("-headers".into());
-        args.push(h.clone());
-    }
+    input_opts(&mut args);
     args.push("-i".into());
     args.push(video_url.to_string());
 
     // Input 1: áudio (opcional)
     if let Some(a) = audio_url {
-        if let Some(ref h) = header_arg {
-            args.push("-headers".into());
-            args.push(h.clone());
-        }
+        input_opts(&mut args);
         args.push("-i".into());
         args.push(a.to_string());
     }

@@ -1,3 +1,35 @@
+export interface CourseAttachment {
+  name: string;
+  url: string;
+  kind: string; // "pdf" | "file"
+}
+
+export interface CourseLessonUI {
+  key: string;
+  module_index: number;
+  module_name: string;
+  lesson_index: number;
+  title: string;
+  has_video: boolean;
+  attachments: CourseAttachment[];
+  vimeo_id?: string | null;
+  content_url?: string | null;
+}
+
+export interface CourseTree {
+  platform: string; // "memberkit" | "hotmart"
+  course_name: string;
+  lessons: CourseLessonUI[];
+}
+
+export interface CourseProgressEvt {
+  key: string;
+  status: string; // "downloading" | "done" | "skipped" | "error"
+  message: string;
+  done: number;
+  total: number;
+}
+
 export interface StreamInfo {
   url: string;
   quality: string;
